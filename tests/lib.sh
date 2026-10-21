@@ -104,13 +104,15 @@ json_get() {
 
 # MARK: - HTTP
 
-# GET a URL: print the HTTP status ("000" when nothing answers) and keep the body in $SANDBOX/body
+# GET a URL: print the HTTP status ("000" when nothing answers) and keep the body in $SANDBOX/body.
+# Headers may follow, as "Name: value", such as the login tailscale serve adds for a tailnet user.
 http_get() {
-	python3 - "$1" "$SANDBOX/body" << 'EOF'
+	python3 - "$SANDBOX/body" "$@" << 'EOF'
 import sys, urllib.error, urllib.request
-url, body = sys.argv[1:3]
+body, url = sys.argv[1:3]
+request = urllib.request.Request(url, headers=dict(h.split(": ", 1) for h in sys.argv[3:]))
 try:
-    with urllib.request.urlopen(url, timeout=5) as response:
+    with urllib.request.urlopen(request, timeout=5) as response:
         status, data = response.status, response.read()
 except urllib.error.HTTPError as error:
     status, data = error.code, error.read()
@@ -124,12 +126,14 @@ EOF
 
 # The local server behind a tailnet port, as the fake tailscale was told: http://127.0.0.1:<port>
 local_url() {
-	cat "$FAKE_TAILSCALE_DIR/serve/$1"
+	cat "$FAKE_TAILSCALE_DIR/foreground/$1" 2> /dev/null || cat "$FAKE_TAILSCALE_DIR/serve/$1"
 }
 
 # GET a path from what is shared on a tailnet port, through the fake tailscale's record
 fetch() {
-	http_get "$(local_url "$1")$2"
+	local port="$1" path="$2"
+	shift 2
+	http_get "$(local_url "$port")$path" "$@"
 }
 
 # MARK: - Fixtures
@@ -188,7 +192,10 @@ assert_empty_dir() {
 
 # Nothing left behind: no serve config, no record of the share, no temporary files
 assert_clean() {
-	[[ -n "${FAKE_TAILSCALE_DIR:-}" ]] && assert_empty_dir "$FAKE_TAILSCALE_DIR/serve" "the tailscale serve config"
+	if [[ -n "${FAKE_TAILSCALE_DIR:-}" ]]; then
+		assert_empty_dir "$FAKE_TAILSCALE_DIR/serve" "the tailscale serve config"
+		assert_empty_dir "$FAKE_TAILSCALE_DIR/foreground" "the tailscale serve config in the foreground"
+	fi
 	assert_empty_dir "$TAILSHARE_STATE_DIR" "the state directory"
 	assert_empty_dir "$TMPDIR" "the temporary directory"
 }

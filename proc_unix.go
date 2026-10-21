@@ -22,3 +22,9 @@ func terminate(pid int) {
 func detachedProcess() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setsid: true}
 }
+
+// The tailscale serve a share runs, in a process group of its own: a Ctrl-C reaches tailshare
+// alone, which then stops it and waits until the port is free
+func serveProcess() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{Setpgid: true}
+}

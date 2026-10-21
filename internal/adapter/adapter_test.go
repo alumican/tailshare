@@ -152,7 +152,8 @@ func TestName(t *testing.T) {
 func TestFile(t *testing.T) {
 	dir := tempDir(t)
 	write(t, filepath.Join(dir, "my notes.txt"), "hello")
-	fsys, open, err := builtin(t, "99-file").Prepare(filepath.Join(dir, "my notes.txt"), base, "")
+	prepared, err := builtin(t, "99-file").Prepare(filepath.Join(dir, "my notes.txt"), base, "")
+	fsys, open := prepared.FS, prepared.Open
 	if err != nil || open != "/my notes.txt" {
 		t.Fatalf("open %q, err %v", open, err)
 	}
@@ -164,7 +165,8 @@ func TestFile(t *testing.T) {
 func TestDirectory(t *testing.T) {
 	dir := tempDir(t)
 	touch(t, filepath.Join(dir, "index.html"), filepath.Join(dir, "assets", "app.js"), filepath.Join(dir, ".env"), filepath.Join(dir, ".git", "config"))
-	fsys, open, err := builtin(t, "80-dir").Prepare(dir, base, "")
+	prepared, err := builtin(t, "80-dir").Prepare(dir, base, "")
+	fsys, open := prepared.FS, prepared.Open
 	if err != nil || open != "/" {
 		t.Fatalf("open %q, err %v", open, err)
 	}
@@ -201,7 +203,8 @@ func TestHTMLFollowsReferencesAndNothingElse(t *testing.T) {
 	}
 	touch(t, filepath.Join(page, "js", "app.js"), filepath.Join(page, "secret.txt"), filepath.Join(dir, "outside.png"))
 
-	fsys, open, err := builtin(t, "50-html").Prepare(filepath.Join(page, "page.html"), base, "")
+	prepared, err := builtin(t, "50-html").Prepare(filepath.Join(page, "page.html"), base, "")
+	fsys, open := prepared.FS, prepared.Open
 	if err != nil || open != "/page.html" {
 		t.Fatalf("open %q, err %v", open, err)
 	}
@@ -221,7 +224,8 @@ func TestHTMLPageThroughALink(t *testing.T) {
 	touch(t, filepath.Join(dir, "logo.png"), filepath.Join(elsewhere, "logo.png"))
 	os.Symlink(filepath.Join(elsewhere, "real.html"), filepath.Join(dir, "page.html"))
 
-	fsys, open, err := builtin(t, "50-html").Prepare(filepath.Join(dir, "page.html"), base, "")
+	prepared, err := builtin(t, "50-html").Prepare(filepath.Join(dir, "page.html"), base, "")
+	fsys, open := prepared.FS, prepared.Open
 	if err != nil || open != "/page.html" {
 		t.Fatalf("open %q, err %v", open, err)
 	}
@@ -254,7 +258,8 @@ func TestIPA(t *testing.T) {
 	}
 	makeIPA(t, filepath.Join(dir, "Demo App.ipa"), info)
 
-	fsys, open, err := builtin(t, "10-ipa").Prepare(filepath.Join(dir, "Demo App.ipa"), base, "")
+	prepared, err := builtin(t, "10-ipa").Prepare(filepath.Join(dir, "Demo App.ipa"), base, "")
+	fsys, open := prepared.FS, prepared.Open
 	if err != nil || open != "/" {
 		t.Fatalf("open %q, err %v", open, err)
 	}
@@ -293,7 +298,7 @@ func TestIPARefusesWhatIsNotAnApp(t *testing.T) {
 	write(t, filepath.Join(dir, "Broken.ipa"), "not a zip")
 	makeIPA(t, filepath.Join(dir, "NoID.ipa"), []byte(`<plist><dict><key>CFBundleName</key><string>x</string></dict></plist>`))
 	for _, name := range []string{"Broken.ipa", "NoID.ipa"} {
-		if _, _, err := builtin(t, "10-ipa").Prepare(filepath.Join(dir, name), base, ""); !errors.Is(err, ErrNotAnApp) {
+		if _, err := builtin(t, "10-ipa").Prepare(filepath.Join(dir, name), base, ""); !errors.Is(err, ErrNotAnApp) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

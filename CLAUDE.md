@@ -16,17 +16,22 @@ Usage and the adapter contract are in README.md. This file is for whoever change
 | | |
 |---|---|
 | `main.go` | Arguments, help, `--adapters` and `--which`, exiting with cleanups (`atExit`, `exit`, `die`) |
-| `serve.go` | Serving, `--detach`, `--list`, `--stop` |
+| `serve.go` | Serving (the request handler: `--secret`, `--allow`, `--once`, the log), `--detach`, `--list`, `--stop` |
+| `skills/tailshare/SKILL.md` | The skill for AI agents (Claude Code, Codex), embedded and printed by `--skill` |
 | `proc_unix.go`, `proc_windows.go` | Whether a process is alive, asking it to stop, detaching |
 | `internal/adapter` | Finding adapters; the built-in ones (`ipa.go`, `html.go`, `file` and `dir` in `adapter.go`); running a `prepare` of your own. Templates for the install page in `templates/`, embedded |
 | `internal/site` | What a share serves, as an `fs.FS`: single files mapped to paths, or a directory without its hidden top entries |
 | `internal/plist` | Reading an Info.plist, XML or binary |
-| `internal/tailscale` | The tailscale CLI: finding it, status, serve |
+| `internal/tailscale` | The tailscale CLI: finding it, status, `serve status`, a `tailscale serve` run in the foreground as a child |
+| `internal/qr` | QR codes for `--qr`, drawn in the terminal |
 | `internal/state` | Records of running shares, `key=value` files in the state directory |
 
 ## Constraints to remember
 
 - **The macOS Tailscale app cannot serve paths** (`tailscale serve <path>` fails with a sandbox error), hence tailshare's own server on `127.0.0.1` behind `tailscale serve --https=<port> http://127.0.0.1:<port>`.
+- **tailscale serve runs in the foreground, as a child**, not with `--bg`: its config then lives under `Foreground` only as long as the child does, and does not survive a reboot. The child is in a process group of its own, so a Ctrl-C reaches tailshare alone, which stops the child and waits until the port is free. If the child dies, the share stops with an error. A share killed with `-9` leaves the child running; `--list` and `--stop` stop it (by its `serve_pid`) once they see the port still proxies to the share's own server. `cleanUpAfter` also turns off a `--bg` config left by tailshare 1.0.
+- **Identity comes from tailscale serve**: it sets `Tailscale-User-Login` on each request and removes any a client sends (`addTailscaleIdentityHeaders` in tailscale's `ipn/ipnlocal/serve.go`). Tagged devices get none. `--allow` relies on this.
+- With `--secret`, the token is stripped before the site is served, and the request log shows the path without it.
 - **tailscale serve can be busy.** When two clients change the serve config at once, one gets "Another client is changing the serve config; please try again." (tailscale/tailscale#18742). tailshare tries again, up to five times.
 - **The CLI is a contract.** Options, output, messages a script may match, and exit status stay as they are; the tests pin them. `--which` and `--adapters` show a built-in adapter's directory as `(built in)`, or `null` in JSON.
 - `--detach` re-runs the same binary with `--as <id>` and `TAILSHARE_LOG` set, in a session of its own, and waits for its first stdout line. The child records itself in the state directory. If it fails before serving, it leaves its log for the parent to show.
@@ -43,12 +48,12 @@ TEST_FILTER=stop tests/run
 go test ./internal/...     # the Go tests alone
 ```
 
-- **Go tests** (`internal/*/…_test.go`) cover what each built-in adapter serves, the site file systems, and the plist reader (including damaged input).
+- **Go tests** cover what each built-in adapter serves, the site file systems, the plist reader (including damaged input), the request handler (`serve_test.go`: token, `--allow`, when `--once` counts a download as complete, the home check), and QR codes. On macOS, `internal/qr` reads its codes back through CoreImage (`testdata/read.swift`), as an independent reader.
 - **Command line tests** (`tests/*.test.sh`, bash and python3) run a build of tailshare from outside, as its users do. A test is a `test_*` function in a `*.test.sh` file, which ends with `run_tests` (see `tests/lib.sh`).
 - `tests/fake/tailscale` stands in for tailscale: it keeps its serve config in the sandbox and can play a daemon that is down, off (`Stopped`), logged out, or whose `serve` fails, is denied, or is busy, and ports held by another `tailscale serve` in the foreground. Every test but `live.test.sh` uses it, so they never touch the real `tailscale serve` config and can run while other shares are up.
 - Each test gets its own sandbox: `TMPDIR`, `XDG_CONFIG_HOME`, `TAILSHARE_STATE_DIR` and the fake's state all live in it. After each way of stopping, `assert_clean` checks that the serve config, the state directory and the temporary directory are empty.
 - The tests for a missing tailscale build tailshare with `-ldflags "-X …/internal/tailscale.MacApp=…"`, so the app in `/Applications` is not found.
-- `live.test.sh` serves for real, fetches the URL over HTTPS, holds an unused port with a foreground `tailscale serve` to check it is refused, and checks that the ports other services use are the same before and after. Run it after changing how tailscale is called.
+- `live.test.sh` serves for real, fetches the URL over HTTPS (with `--secret` and `--allow` too, checking the login tailscale sends), holds an unused port with a foreground `tailscale serve` to check it is refused, and checks that the ports other services use are the same before and after. Run it after changing how tailscale is called.
 - Give a command that should be refused a short `--time`, so a regression ends in seconds instead of serving for an hour.
 
 ## Releasing
@@ -65,6 +70,7 @@ go test ./internal/...     # the Go tests alone
 ## Users
 
 - iOS projects build an IPA in their own OTA script and `exec tailshare` on it. Keep the CLI and the exit status stable for them.
+- AI agents, through the skill. When the CLI changes, update `skills/tailshare/SKILL.md` with it; `args.test.sh` checks that `--skill` prints it.
 
 ## Git
 

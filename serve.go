@@ -2,6 +2,9 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/base32"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"mime"
@@ -11,14 +14,18 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/alumican/tailshare/internal/adapter"
+	"github.com/alumican/tailshare/internal/qr"
 	"github.com/alumican/tailshare/internal/state"
 	"github.com/alumican/tailshare/internal/tailscale"
 )
@@ -66,19 +73,27 @@ func serve(o options, a adapter.Adapter, abs string, seconds int) {
 		die("port %d is already used by tailscale serve; choose another, or leave --port out", port)
 	}
 	base := fmt.Sprintf("https://%s:%d", status.Host, port)
+	token := ""
+	if o.secret {
+		token = randomToken()
+		base += "/" + token
+	}
 
 	// Everything that has to go when tailshare stops, whichever way it stops
 	var (
 		record  state.Record
 		tmp     string
 		server  *http.Server
+		served  atomic.Pointer[tailscale.Serve] // set as soon as tailscale serve runs, even before it has the port
 		serving bool
 		started bool
 	)
+	stopping := make(chan struct{})
 	logFile := os.Getenv("TAILSHARE_LOG")
 	atExit(func() {
-		if serving {
-			cli.ServeOff(port)
+		close(stopping)
+		if s := served.Load(); s != nil {
+			s.Stop()
 		}
 		if server != nil {
 			server.Close()
@@ -114,7 +129,7 @@ func serve(o options, a adapter.Adapter, abs string, seconds int) {
 		siteDir = filepath.Join(tmp, "site")
 		os.Mkdir(siteDir, 0o755)
 	}
-	fsys, open, err := a.Prepare(abs, base, siteDir)
+	prepared, err := a.Prepare(abs, base, siteDir)
 	if err != nil {
 		var exitError *exec.ExitError
 		switch {
@@ -125,31 +140,53 @@ func serve(o options, a adapter.Adapter, abs string, seconds int) {
 		}
 		die("adapter %s failed for %s", a.Name(), o.path)
 	}
-	shareURL := base + escapePath(open)
+	shareURL := base + escapePath(prepared.Open)
 
+	var handedOver func(string)
+	if o.once {
+		var once sync.Once
+		handedOver = func(path string) {
+			once.Do(func() {
+				say("Downloaded %s completely; stopping in 10 seconds.", path)
+				time.AfterFunc(10*time.Second, func() { exit(0) })
+			})
+		}
+	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		die("cannot start the local server: %v", err)
 	}
 	target := "http://" + listener.Addr().String()
-	server = &http.Server{Handler: requestLog(http.FileServerFS(fsys), o.quiet), ReadHeaderTimeout: 30 * time.Second}
+	handler := &shareHandler{files: http.FileServerFS(prepared.FS), token: token, allow: o.allow, main: prepared.Main,
+		handedOver: handedOver, quiet: o.quiet}
+	server = &http.Server{Handler: handler, ReadHeaderTimeout: 30 * time.Second}
 	go func() {
 		if err := server.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
 			die("the local server stopped: %v", err)
 		}
 	}()
 
-	serving = true
-	if err := cli.Serve(port, target); err != nil {
+	serve, err := cli.ServeForeground(port, target, serveProcess(), func(s *tailscale.Serve) { served.Store(s) })
+	if err != nil {
+		served.Store(nil) // it has exited
 		die("tailscale serve failed: %s", serveHint(err))
 	}
+	serving = true
+	go func() {
+		<-serve.Done()
+		select {
+		case <-stopping: // stopped by the cleanup
+		default:
+			die("tailscale serve stopped: %s", serve.Output())
+		}
+	}()
 
 	expires := ""
 	if seconds > 0 {
 		expires = time.Now().Add(time.Duration(seconds) * time.Second).Format("2006-01-02T15:04:05-0700")
 	}
 	record = state.Record{Port: port, URL: shareURL, Adapter: a.Name(), Path: abs, PID: os.Getpid(), Expires: expires,
-		Target: target, Log: logFile, Tmp: tmp}
+		Target: target, Serve: serve.PID(), Log: logFile, Tmp: tmp}
 	if err := state.Write(stateDir(), &record); err != nil {
 		die("cannot record the share: %v", err)
 	}
@@ -160,6 +197,9 @@ func serve(o options, a adapter.Adapter, abs string, seconds int) {
 		fmt.Println(shareURL)
 	}
 	started = true
+	if o.qr && !o.quiet {
+		showQR(shareURL)
+	}
 	if seconds > 0 {
 		say("Serving %s as %s on your tailnet for %s. Ctrl-C to stop.", o.path, a.Name(), o.timeSpec)
 		time.Sleep(time.Duration(seconds) * time.Second)
@@ -197,38 +237,165 @@ func escapePath(path string) string {
 	return strings.Join(parts, "/")
 }
 
+// 128 random bits, as 26 lower-case letters and digits, to put in a URL that cannot be guessed
+func randomToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		die("cannot make a secret: %v", err)
+	}
+	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b))
+}
+
+func showQR(text string) {
+	code, err := qr.Encode(text)
+	if err != nil {
+		warn("the URL is too long for a QR code")
+		return
+	}
+	fmt.Fprint(os.Stderr, code.Terminal(2))
+}
+
 func init() {
 	// What iOS expects for an install, whatever this system's MIME table says
 	mime.AddExtensionType(".ipa", "application/octet-stream")
 	mime.AddExtensionType(".plist", "text/xml; charset=utf-8")
 }
 
-// MARK: - Request log
+// MARK: - Requests
 
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
+// shareHandler serves the site to whoever may open it, logs each request, and tells when the main
+// file has been handed over (--once).
+type shareHandler struct {
+	files      http.Handler
+	token      string   // the first path segment every URL must have (--secret), or empty
+	allow      []string // logins or globs that may open it (--allow); anyone on the tailnet when empty
+	main       string   // the path whose complete download hands the thing over
+	handedOver func(path string)
+	quiet      bool
 }
 
-func (s *statusRecorder) WriteHeader(status int) {
-	s.status = status
-	s.ResponseWriter.WriteHeader(status)
-}
-
-// Log each request to stderr: time, method, path, status, and who asked when tailscale says so
-func requestLog(next http.Handler, quiet bool) http.Handler {
-	if quiet {
-		return next
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(recorder, r)
+func (h *shareHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	recorder := &recorder{ResponseWriter: w}
+	login := userLogin(r)
+	defer func() {
+		if h.quiet {
+			return
+		}
 		who := ""
-		if login := r.Header.Get("Tailscale-User-Login"); login != "" {
+		if login != "" {
 			who = " (" + login + ")"
 		}
-		fmt.Fprintf(os.Stderr, "%s %s %s %d%s\n", time.Now().Format("15:04:05"), r.Method, r.URL.RequestURI(), recorder.status, who)
-	})
+		fmt.Fprintf(os.Stderr, "%s %s %s %d%s\n", time.Now().Format("15:04:05"), r.Method, r.URL.RequestURI(), recorder.Status(), who)
+	}()
+
+	if len(h.allow) > 0 && !allowed(login, h.allow) {
+		http.Error(recorder, "Forbidden", http.StatusForbidden)
+		return
+	}
+	path := r.URL.Path
+	if h.token != "" {
+		prefix := "/" + h.token
+		switch {
+		case path == prefix:
+			http.Redirect(recorder, r, prefix+"/", http.StatusMovedPermanently)
+			return
+		case !strings.HasPrefix(path, prefix+"/"):
+			http.NotFound(recorder, r)
+			return
+		}
+		// From here on, and in the log, the path is the one inside the site, without the token
+		path = strings.TrimPrefix(path, prefix)
+		stripped := r.Clone(r.Context())
+		stripped.URL.Path = path
+		stripped.URL.RawPath = ""
+		r = stripped
+	}
+	h.files.ServeHTTP(recorder, r)
+
+	if h.handedOver != nil && r.Method == http.MethodGet && isMain(path, h.main) && recorder.Complete() {
+		h.handedOver(h.main)
+	}
+}
+
+// Who asked, as tailscale serve says: the login of a tailnet user, or empty for a tagged device.
+// tailscale serve removes any such header a client sends, so it cannot be forged over the tailnet.
+func userLogin(r *http.Request) string {
+	login := r.Header.Get("Tailscale-User-Login")
+	if decoded, err := new(mime.WordDecoder).DecodeHeader(login); err == nil {
+		login = decoded
+	}
+	return login
+}
+
+func allowed(login string, patterns []string) bool {
+	if login == "" {
+		return false
+	}
+	for _, pattern := range patterns {
+		if ok, _ := path.Match(strings.ToLower(pattern), strings.ToLower(login)); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// Whether a request path is the main file; a page called index.html is also served at its directory
+func isMain(path, main string) bool {
+	return path == main || strings.HasSuffix(main, "/index.html") && path == strings.TrimSuffix(main, "index.html")
+}
+
+// recorder remembers what a response sent, for the request log and to tell a complete download
+type recorder struct {
+	http.ResponseWriter
+	status  int
+	written int64
+	failed  bool
+}
+
+func (r *recorder) WriteHeader(status int) {
+	if r.status == 0 {
+		r.status = status
+	}
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *recorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	n, err := r.ResponseWriter.Write(b)
+	r.written += int64(n)
+	if err != nil {
+		r.failed = true
+	}
+	return n, err
+}
+
+func (r *recorder) Status() int {
+	if r.status == 0 {
+		return http.StatusOK
+	}
+	return r.status
+}
+
+// Complete tells whether the response sent a whole file: all of it, or the last part of it when
+// the client fetched it in ranges, as iOS does with a large IPA
+func (r *recorder) Complete() bool {
+	if r.failed {
+		return false
+	}
+	switch r.Status() {
+	case http.StatusOK:
+		length := r.Header().Get("Content-Length")
+		return length == "" || length == strconv.FormatInt(r.written, 10)
+	case http.StatusPartialContent:
+		var first, last, total int64
+		if _, err := fmt.Sscanf(r.Header().Get("Content-Range"), "bytes %d-%d/%d", &first, &last, &total); err != nil {
+			return false
+		}
+		return last == total-1 && r.written == last-first+1
+	}
+	return false
 }
 
 // MARK: - Detach
@@ -261,6 +428,15 @@ func detach(o options, a adapter.Adapter, abs string) {
 	if o.json {
 		args = append(args, "--json")
 	}
+	if o.once {
+		args = append(args, "--once")
+	}
+	if o.secret {
+		args = append(args, "--secret")
+	}
+	for _, login := range o.allow {
+		args = append(args, "--allow", login)
+	}
 	cmd := exec.Command(self, append(args, "--", abs)...)
 	cmd.Env = append(os.Environ(), "TAILSHARE_LOG="+log.Name())
 	cmd.Stderr = log
@@ -292,9 +468,18 @@ func detach(o options, a adapter.Adapter, abs string) {
 		die("failed to start in the background")
 	}
 	fmt.Println(out)
+	shareURL := out
+	if o.json {
+		var share struct{ URL string }
+		json.Unmarshal([]byte(out), &share)
+		shareURL = share.URL
+	}
 	port := ""
-	if match := portInURL.FindStringSubmatch(out); match != nil {
+	if match := portInURL.FindStringSubmatch(shareURL); match != nil {
 		port = match[1]
+	}
+	if o.qr && !o.quiet {
+		showQR(shareURL)
 	}
 	say("Serving in the background (pid %d). Stop it with: %s --stop %s", cmd.Process.Pid, prog, port)
 	exit(0)
@@ -318,13 +503,24 @@ func runningShares() []state.Record {
 	return running
 }
 
-// Remove what a share that is gone left behind. Its tailscale serve port is turned off only if it
-// still proxies to the share's own local server, so a port something else took since is not touched.
+// Remove what a share that is gone left behind. Its tailscale serve is stopped only if the port still
+// proxies to the share's own local server, so a port something else took since is not touched: the
+// tailscale serve it ran in the foreground (which outlives a share killed with -9), or the config
+// left in the background by tailshare 1.0.
 func cleanUpAfter(r state.Record) {
 	if r.Target != "" {
 		if cli, err := tailscale.Find(); err == nil {
-			if config, err := cli.ServeConfig(); err == nil && config.Proxy(r.Port) == r.Target {
-				cli.ServeOff(r.Port)
+			if config, err := cli.ServeConfig(); err == nil {
+				if r.Serve > 0 && config.ForegroundProxy(r.Port) == r.Target {
+					// While its config is there, the process is still that tailscale serve
+					if process, err := os.FindProcess(r.Serve); err == nil {
+						tailscale.Terminate(process)
+						cli.WaitFree(r.Port, 5*time.Second)
+					}
+				}
+				if config.Proxy(r.Port) == r.Target {
+					cli.ServeOff(r.Port)
+				}
 			}
 		}
 	}

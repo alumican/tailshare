@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -22,21 +21,21 @@ var templates embed.FS
 
 // An install page for an iOS app: open it in Safari on an iPhone and tap Install.
 // iOS installs only IPAs signed for development or ad hoc, on devices registered for them.
-func ipa(input, base string) (fs.FS, string, error) {
+func ipa(input, base string) (Prepared, error) {
 	info, err := appInfo(input)
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: %s (%v)", ErrNotAnApp, input, err)
+		return Prepared{}, fmt.Errorf("%w: %s (%v)", ErrNotAnApp, input, err)
 	}
 	text := func(key string) string {
 		value, _ := info[key].(string)
 		return value
 	}
 	if text("CFBundleIdentifier") == "" {
-		return nil, "", fmt.Errorf("%w: %s (no CFBundleIdentifier)", ErrNotAnApp, input)
+		return Prepared{}, fmt.Errorf("%w: %s (no CFBundleIdentifier)", ErrNotAnApp, input)
 	}
 	stat, err := os.Stat(input)
 	if err != nil {
-		return nil, "", err
+		return Prepared{}, err
 	}
 
 	name := filepath.Base(input)
@@ -60,7 +59,7 @@ func ipa(input, base string) (fs.FS, string, error) {
 		"title":     xmlEscape(title),
 	})
 	if err != nil {
-		return nil, "", err
+		return Prepared{}, err
 	}
 	page, err := fill("index.html", map[string]string{
 		"title":       html.EscapeString(title),
@@ -69,13 +68,15 @@ func ipa(input, base string) (fs.FS, string, error) {
 		"install_url": html.EscapeString("itms-services://?action=download-manifest&url=" + manifestURL),
 	})
 	if err != nil {
-		return nil, "", err
+		return Prepared{}, err
 	}
-	return site.Files{
+	files := site.Files{
 		name:             {Path: input},
 		"index.html":     {Data: page},
 		"manifest.plist": {Data: manifest},
-	}, "/", nil
+	}
+	// Handed over when the device has downloaded the IPA itself, after Install is tapped
+	return Prepared{FS: files, Open: "/", Main: "/" + name}, nil
 }
 
 // The app's Info.plist: Payload/<name>.app/Info.plist inside the archive

@@ -4,9 +4,11 @@ package main
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -18,9 +20,14 @@ import (
 )
 
 // Set by a release build: go build -ldflags "-X main.version=..."
-var version = "1.0.0"
+var version = "1.1.0"
 
 var prog = filepath.Base(os.Args[0])
+
+// The agent skill for Claude Code and Codex, printed by --skill
+//
+//go:embed skills/tailshare/SKILL.md
+var skill string
 
 func usage() string {
 	return fmt.Sprintf(`Usage: %[1]s [options] <path>      serve a path
@@ -28,6 +35,7 @@ func usage() string {
        %[1]s --stop <port|all>     stop running shares
        %[1]s --adapters            list the adapters
        %[1]s --which <path>        show which adapter would serve a path
+       %[1]s --skill               print the skill for AI agents (SKILL.md)
 
 Try '%[1]s --help' for more.
 `, prog)
@@ -38,7 +46,7 @@ func help() string {
 
 USAGE
   %[1]s [options] <path>
-  %[1]s --list | --stop <port|all> | --adapters | --which <path>
+  %[1]s --list | --stop <port|all> | --adapters | --which <path> | --skill
 
 DESCRIPTION
   Serves <path> over HTTPS to the devices on your tailnet only, and prints its URL.
@@ -59,6 +67,14 @@ OPTIONS
   -t, --time TIME    stop after TIME: 90 (seconds), 30s, 10m, 2h, or 0 for never.
                      Default: 1h.
   -a, --as NAME      use this adapter whatever the path is: ipa, html, dir, file, ...
+      --once         stop once the thing has been downloaded completely (the file,
+                     the IPA, the page), ten seconds later so a page can load the rest.
+      --secret       put an unguessable token in the URL, so only those who get the
+                     URL can open it.
+      --allow LOGIN  only let these tailnet users open it: their login, such as
+                     alice@example.com, or a glob such as *@example.com. Repeat it,
+                     or separate with commas. Tagged devices have no login.
+      --qr           also show the URL as a QR code on stderr, for a phone camera.
   -d, --detach       serve in the background: print the URL and return at once.
                      Stop it with --stop, or let --time end it.
   -j, --json         print one JSON object per line instead of plain text
@@ -68,6 +84,8 @@ OPTIONS
       --stop TARGET  stop the share on port TARGET, or all of them with "all".
       --adapters     list the adapters in the order they are tried.
       --which PATH   show which adapter would serve PATH; serve nothing.
+      --skill        print the skill that teaches AI agents (Claude Code, Codex) to
+                     use tailshare: save it as <skills>/tailshare/SKILL.md.
   -h, --help         show this help.  -V, --version  show the version.
 
 OUTPUT
@@ -75,11 +93,12 @@ OUTPUT
   With --json, serving prints:
     {"url": "...", "port": 10443, "adapter": "html", "path": "...", "pid": 123,
      "expires": "2026-01-01T12:00:00+0900"}        (expires is null with --time 0)
-  stderr carries messages and the request log, unless --quiet.
+  stderr carries messages and the request log (with who opened it), unless --quiet.
 
 EXIT STATUS
   0  served and stopped normally (time up, Ctrl-C, --stop), or the query succeeded
-  1  error: no such path, no adapter, port in use, tailscale not running, ...
+  1  error: no such path, no adapter, port in use, tailscale not running, the home
+     directory or the root of a disk given to serve, ...
   2  wrong arguments
 
 ENVIRONMENT
@@ -91,6 +110,7 @@ EXAMPLES
   %[1]s report.html                 share a page for an hour
   %[1]s -t 0 ./dist                 share a built site until Ctrl-C
   %[1]s -t 10m App.ipa              an iPhone install page for ten minutes
+  %[1]s --once --secret --qr a.zip  one download, by whoever scans the code
   url=$(%[1]s -d -q notes.pdf)      share in the background, keep the URL
   %[1]s -d -j build/ | jq -r .url   the same, as JSON
   %[1]s --list                      what is being shared now
@@ -209,7 +229,11 @@ type options struct {
 	detach   bool
 	json     bool
 	quiet    bool
-	mode     string // serve, list, stop, adapters, which
+	once     bool
+	secret   bool
+	allow    []string
+	qr       bool
+	mode     string // serve, list, stop, adapters, which, skill
 	stop     string
 	path     string
 }
@@ -231,6 +255,15 @@ func parse(args []string) options {
 			usageError("%s needs a value", args[i])
 		}
 		return args[i+1]
+	}
+	addAllow := func(list string) {
+		for _, login := range strings.Split(list, ",") {
+			login = strings.TrimSpace(login)
+			if _, err := path.Match(login, ""); login == "" || err != nil {
+				usageError("--allow takes logins such as alice@example.com or *@example.com (got '%s')", list)
+			}
+			o.allow = append(o.allow, login)
+		}
 	}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -254,6 +287,19 @@ func parse(args []string) options {
 			i++
 		case name == "--as" && hasInline:
 			o.as = inline
+		case arg == "--allow":
+			addAllow(value(i))
+			i++
+		case name == "--allow" && hasInline:
+			addAllow(inline)
+		case arg == "--once":
+			o.once = true
+		case arg == "--secret":
+			o.secret = true
+		case arg == "--qr":
+			o.qr = true
+		case arg == "--skill":
+			o.mode = "skill"
 		case arg == "-d" || arg == "--detach":
 			o.detach = true
 		case arg == "-j" || arg == "--json":
@@ -315,6 +361,9 @@ func main() {
 	o := parse(os.Args[1:])
 
 	switch o.mode {
+	case "skill":
+		fmt.Print(skill)
+		exit(0)
 	case "adapters":
 		showAdapters(o)
 		exit(0)
@@ -374,10 +423,37 @@ func main() {
 		exit(0)
 	}
 
+	if info.IsDir() {
+		if reason := tooBroad(abs); reason != "" {
+			die("refusing to serve %s: %s; serve the folder you mean inside it", o.path, reason)
+		}
+	}
 	if o.detach {
 		detach(o, a, abs)
 	}
 	serve(o, a, abs, seconds)
+}
+
+// Why a directory would hand out far more than meant: the root of a disk, or your home directory
+// or one above it. Empty when it is fine.
+func tooBroad(dir string) string {
+	if filepath.Dir(dir) == dir {
+		return "it is the root of a disk"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(home); err == nil {
+		home = resolved
+	}
+	switch {
+	case dir == home:
+		return "it is your home directory"
+	case strings.HasPrefix(home, dir+string(filepath.Separator)):
+		return "it holds your home directory"
+	}
+	return ""
 }
 
 var timePattern = regexp.MustCompile(`^([0-9]+)([smh]?)$`)

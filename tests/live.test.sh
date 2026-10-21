@@ -64,6 +64,33 @@ test_time_up_over_the_tailnet() {
 	assert_clean
 }
 
+test_secret_and_allow_over_the_tailnet() {
+	live
+	echo "for the owner" > "$FILES/a.txt"
+	run "$TAILSHARE" -d -j --secret --allow nobody@example.invalid "$FILES/a.txt"
+	assert_status 0
+	local url port pid
+	url="$(json_get "$out" url)" port="$(json_get "$out" port)" pid="$(json_get "$out" pid)"
+	STARTED="$STARTED $pid"
+	# This machine is on the tailnet as its owner, who is not allowed
+	assert_eq "$(http_get "$url")" 403 "GET $url as someone not allowed"
+	run "$TAILSHARE" --stop "$port"
+
+	run "$TAILSHARE" -d -j --secret --allow '*' "$FILES/a.txt"
+	assert_status 0
+	url="$(json_get "$out" url)" port="$(json_get "$out" port)" pid="$(json_get "$out" pid)"
+	STARTED="$STARTED $pid"
+	assert_eq "$(http_get "$url")" 200 "GET $url"
+	assert_eq "$(cat "$SANDBOX/body")" "for the owner" "body"
+	assert_eq "$(http_get "${url%%:${port}/*}:$port/a.txt")" 404 "GET without the token"
+	# tailscale serve told who asked, and the log says so, without the token
+	grep -q "GET /a.txt 200 (.*@.*)" "$TAILSHARE_STATE_DIR"/log.* || fail "no login in the log: $(cat "$TAILSHARE_STATE_DIR"/log.*)"
+	run "$TAILSHARE" --stop "$port"
+	assert_status 0
+	assert_others_untouched
+	assert_clean
+}
+
 test_a_port_held_in_the_foreground_is_refused() {
 	live
 	# A port nothing uses, held by a tailscale serve in the foreground, as another tool would

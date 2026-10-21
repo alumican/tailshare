@@ -30,7 +30,14 @@ type Adapter struct {
 	Description string
 	Usable      bool // false when an adapter of your own has no executable prepare
 
-	prepare func(input, base string) (fs.FS, string, error)
+	prepare func(input, base string) (Prepared, error)
+}
+
+// Prepared is what an adapter serves for a path.
+type Prepared struct {
+	FS   fs.FS
+	Open string // the path to open, such as / or /report.html (not URL-encoded)
+	Main string // the path whose complete download hands the thing over (for --once): the file, the IPA, the page
 }
 
 // Name is the ID without its ordering number: 10-ipa -> ipa.
@@ -60,10 +67,10 @@ func (a Adapter) Matches(input string, isDir bool) bool {
 	return false
 }
 
-// Prepare decides what to serve for the path: the site, and the path to open in it (such as / or
-// /report.html, not URL-encoded). base is https://<host>:<port>. An adapter of your own fills
-// siteDir, an empty directory that must stay until the share stops.
-func (a Adapter) Prepare(input, base, siteDir string) (fs.FS, string, error) {
+// Prepare decides what to serve for the path. base is the URL the site is served at,
+// https://<host>:<port>, or with a path under it (--secret). An adapter of your own fills siteDir,
+// an empty directory that must stay until the share stops.
+func (a Adapter) Prepare(input, base, siteDir string) (Prepared, error) {
 	if a.prepare != nil {
 		return a.prepare(input, base)
 	}
@@ -166,13 +173,13 @@ func prepareProgram(dir string) string {
 
 // Run the adapter's prepare: it fills siteDir and prints the path to open as its last line.
 // What it says on stderr goes to ours.
-func (a Adapter) runPrepare(input, base, siteDir string) (fs.FS, string, error) {
+func (a Adapter) runPrepare(input, base, siteDir string) (Prepared, error) {
 	cmd := exec.Command(prepareProgram(a.Dir), input, siteDir, base)
 	cmd.Env = append(os.Environ(), "TAILSHARE_ADAPTER_DIR="+a.Dir)
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, "", err
+		return Prepared{}, err
 	}
 	lines := strings.Split(strings.TrimRight(string(out), "\r\n"), "\n")
 	open := strings.TrimRight(lines[len(lines)-1], "\r")
@@ -180,9 +187,9 @@ func (a Adapter) runPrepare(input, base, siteDir string) (fs.FS, string, error) 
 		if open == "" {
 			open = "nothing"
 		}
-		return nil, "", fmt.Errorf("%w (got: %s)", ErrNoPath, open)
+		return Prepared{}, fmt.Errorf("%w (got: %s)", ErrNoPath, open)
 	}
-	return os.DirFS(siteDir), open, nil
+	return Prepared{FS: os.DirFS(siteDir), Open: open, Main: open}, nil
 }
 
 // ErrNoPath is returned when an adapter of your own does not print the path to open.
@@ -201,12 +208,12 @@ var builtins = []Adapter{
 }
 
 // That one file, at /<its name>
-func file(input, _ string) (fs.FS, string, error) {
+func file(input, _ string) (Prepared, error) {
 	name := filepath.Base(input)
-	return site.Files{name: {Path: input}}, "/" + name, nil
+	return Prepared{FS: site.Files{name: {Path: input}}, Open: "/" + name, Main: "/" + name}, nil
 }
 
 // The directory at /, so a built site finds its files where it expects them: its index.html, or a listing
-func directory(input, _ string) (fs.FS, string, error) {
-	return site.Dir(input), "/", nil
+func directory(input, _ string) (Prepared, error) {
+	return Prepared{FS: site.Dir(input), Open: "/", Main: "/"}, nil
 }

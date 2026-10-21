@@ -21,6 +21,7 @@ type Record struct {
 	PID     int
 	Expires string // empty when it never expires
 	Target  string // the local server tailscale serve proxies to: http://127.0.0.1:<port>
+	Serve   int    // the tailscale serve running in the foreground for the share, as a child of it
 	Log     string // where a detached share writes its stderr
 	Tmp     string // a temporary directory of its own, if it has one
 
@@ -33,8 +34,8 @@ func Write(dir string, r *Record) error {
 		return err
 	}
 	r.File = filepath.Join(dir, strconv.Itoa(r.Port))
-	text := fmt.Sprintf("port=%d\nurl=%s\nadapter=%s\npath=%s\npid=%d\nexpires=%s\ntarget=%s\nlog=%s\ntmp=%s\n",
-		r.Port, r.URL, r.Adapter, r.Path, r.PID, r.Expires, r.Target, r.Log, r.Tmp)
+	text := fmt.Sprintf("port=%d\nurl=%s\nadapter=%s\npath=%s\npid=%d\nexpires=%s\ntarget=%s\nserve_pid=%d\nlog=%s\ntmp=%s\n",
+		r.Port, r.URL, r.Adapter, r.Path, r.PID, r.Expires, r.Target, r.Serve, r.Log, r.Tmp)
 	return os.WriteFile(r.File, []byte(text), 0o644)
 }
 
@@ -64,6 +65,8 @@ func Read(file string) (Record, error) {
 			r.Expires = value
 		case "target":
 			r.Target = value
+		case "serve_pid":
+			r.Serve, _ = strconv.Atoi(value)
 		case "log":
 			r.Log = value
 		case "tmp":

@@ -31,3 +31,9 @@ func terminate(pid int) {
 func detachedProcess() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{CreationFlags: 0x00000008 /* DETACHED_PROCESS */ | syscall.CREATE_NEW_PROCESS_GROUP, HideWindow: true}
 }
+
+// The tailscale serve a share runs, in a process group of its own: a Ctrl-C reaches tailshare
+// alone, which then stops it
+func serveProcess() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP, HideWindow: true}
+}

@@ -26,7 +26,9 @@ stop_and_check() {
 }
 
 assert_fetch() {
-	assert_eq "$(fetch "$port" "$1")" "$2" "GET $1"
+	local path="$1" want="$2"
+	shift 2
+	assert_eq "$(fetch "$port" "$path" "$@")" "$want" "GET $path${1:+ ($*)}"
 }
 
 # MARK: - Each adapter over HTTP
@@ -93,7 +95,7 @@ test_adapter_failure_serves_nothing() {
 	assert_eq "$out" "" "stdout"
 	assert_contains "$err" "adapter ipa failed"
 	assert_clean
-	assert_eq "$(grep -c -- '--bg' "$FAKE_TAILSCALE_DIR/calls")" 0 "calls to tailscale serve --bg"
+	assert_eq "$(grep -c '^serve --https=[0-9]* http' "$FAKE_TAILSCALE_DIR/calls")" 0 "calls to tailscale serve"
 }
 
 test_adapter_of_your_own() {
@@ -198,6 +200,107 @@ test_detach_says_how_to_stop() {
 	assert_eq "$out" "https://host.example.ts.net:10443/a.txt" "stdout"
 	assert_contains "$err" "Stop it with: tailshare --stop 10443"
 	run "$TAILSHARE" --stop 10443
+	assert_clean
+}
+
+test_secret_puts_a_token_in_the_url() {
+	make_ipa "$FILES/Demo.ipa"
+	share --secret "$FILES/Demo.ipa"
+	local url token
+	url="$(json_get "$share" url)"
+	[[ "$url" =~ ^https://host\.example\.ts\.net:10443/([a-z2-7]{26})/$ ]] || fail "URL: $url"
+	token="${BASH_REMATCH[1]}"
+	assert_fetch "/$token/" 200
+	assert_fetch "/$token/Demo.ipa" 200
+	assert_fetch / 404
+	assert_fetch /Demo.ipa 404
+	assert_fetch /manifest.plist 404
+	# The install page and the manifest point inside the token
+	assert_fetch "/$token/manifest.plist" 200
+	assert_contains "$(cat "$SANDBOX/body")" "https://host.example.ts.net:10443/$token/Demo.ipa?v="
+	run "$TAILSHARE" --list --json
+	assert_eq "$(json_get "$out" url)" "$url" "URL in --list"
+	stop_and_check
+}
+
+test_allow_lets_only_these_users_in() {
+	echo hi > "$FILES/a.txt"
+	share --allow alice@example.com --allow '*@team.example' "$FILES/a.txt"
+	assert_fetch /a.txt 403
+	assert_fetch /a.txt 403 "Tailscale-User-Login: bob@example.com"
+	assert_fetch /a.txt 200 "Tailscale-User-Login: alice@example.com"
+	assert_fetch /a.txt 200 "Tailscale-User-Login: carol@team.example"
+	# The request log says who asked
+	assert_contains "$(cat "$TAILSHARE_STATE_DIR"/log.*)" "GET /a.txt 200 (alice@example.com)"
+	assert_contains "$(cat "$TAILSHARE_STATE_DIR"/log.*)" "GET /a.txt 403 (bob@example.com)"
+	stop_and_check
+}
+
+test_allow_needs_a_login() {
+	echo hi > "$FILES/a.txt"
+	run "$TAILSHARE" --allow '' "$FILES/a.txt"
+	assert_status 2
+	run "$TAILSHARE" --allow '[bad' "$FILES/a.txt"
+	assert_status 2
+	assert_contains "$err" "--allow takes logins such as alice@example.com"
+}
+
+test_once_stops_after_the_whole_file() {
+	echo "the file" > "$FILES/a.txt"
+	share --once -t 0 "$FILES/a.txt"
+	local pid
+	pid="$(json_get "$share" pid)"
+	assert_fetch / 200
+	assert_fetch /a.txt 200
+	wait_until 15 gone "$pid" || fail "still running after the download"
+	assert_clean
+}
+
+test_qr_code_on_stderr() {
+	echo hi > "$FILES/a.txt"
+	run "$TAILSHARE" -d --qr "$FILES/a.txt"
+	assert_status 0
+	assert_eq "$out" "https://host.example.ts.net:10443/a.txt" "stdout"
+	assert_contains "$err" $'\e[30;47m'
+	assert_contains "$err" "▀"
+	run "$TAILSHARE" --stop 10443
+	run "$TAILSHARE" -d -q --qr "$FILES/a.txt"
+	assert_eq "$err" "" "stderr with --quiet"
+	run "$TAILSHARE" --stop 10443
+	assert_clean
+}
+
+test_home_and_the_root_are_refused() {
+	export HOME="$SANDBOX/home"
+	mkdir -p "$HOME/site"
+	echo hi > "$HOME/site/index.html"
+	run "$TAILSHARE" -t 3s "$HOME"
+	assert_status 1
+	assert_contains "$err" "refusing to serve $HOME: it is your home directory"
+	run "$TAILSHARE" -t 3s "$SANDBOX"
+	assert_status 1
+	assert_contains "$err" "it holds your home directory"
+	run "$TAILSHARE" -t 3s -d /
+	assert_status 1
+	assert_contains "$err" "refusing to serve /: it is the root of a disk"
+	assert_eq "$(cat "$FAKE_TAILSCALE_DIR/calls" 2> /dev/null)" "" "calls to tailscale"
+	share "$HOME/site"
+	assert_fetch / 200
+	stop_and_check
+}
+
+test_a_share_stops_when_tailscale_serve_does() {
+	echo hi > "$FILES/a.txt"
+	start_foreground -t 0 "$FILES/a.txt"
+	local serve_pid
+	serve_pid="$(sed -n 's/^serve_pid=//p' "$TAILSHARE_STATE_DIR/10443")"
+	[[ -n "$serve_pid" ]] || fail "no serve_pid in the record"
+	kill -TERM "$serve_pid"
+	wait "$FG_PID"
+	status=$?
+	out="$(cat "$SANDBOX/fg.out")" err="$(cat "$SANDBOX/fg.err")"
+	assert_status 1
+	assert_contains "$err" "tailscale serve stopped"
 	assert_clean
 }
 

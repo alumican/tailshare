@@ -2,7 +2,6 @@ package adapter
 
 import (
 	"html"
-	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -18,21 +17,21 @@ import (
 // into the style sheets the page uses (url(...) and @import), as long as they stay inside the page's
 // directory. Files a script loads by itself (fetch, import maps, ...) are not found: serve the
 // directory instead.
-func htmlPage(input, _ string) (fs.FS, string, error) {
+func htmlPage(input, _ string) (Prepared, error) {
 	top, err := filepath.EvalSymlinks(filepath.Dir(input))
 	if err != nil {
-		return nil, "", err
+		return Prepared{}, err
 	}
 	name := filepath.Base(input)
 	// The page as seen from its directory, even if the page itself is a link to somewhere else
 	page := filepath.Join(top, name)
 	text, err := os.ReadFile(page)
 	if err != nil {
-		return nil, "", err
+		return Prepared{}, err
 	}
 	resolvedPage, err := filepath.EvalSymlinks(page)
 	if err != nil {
-		return nil, "", err
+		return Prepared{}, err
 	}
 
 	files := site.Files{name: {Path: resolvedPage}}
@@ -56,7 +55,7 @@ func htmlPage(input, _ string) (fs.FS, string, error) {
 		}
 	}
 	follow(page, htmlReferences(string(text)))
-	return files, "/" + name, nil
+	return Prepared{FS: files, Open: "/" + name, Main: "/" + name}, nil
 }
 
 // The local file a reference points to, if it is a file inside top

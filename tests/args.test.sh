@@ -67,4 +67,13 @@ test_options_with_equals_and_after_double_dash() {
 	assert_eq "$(cut -f 1 <<< "$out")" "file" "adapter"
 }
 
+test_skill() {
+	run "$TAILSHARE" --skill
+	assert_status 0
+	assert_eq "$(head -n 3 <<< "$out")" "---
+name: tailshare
+description: Show the user a file, a page, a built site, a PDF, an image or an iPhone app (IPA) on their phone or another device, through their Tailscale tailnet. Use when the user should open, look at, try or install something you made, instead of starting your own web server or tunnel." "front matter"
+	assert_eq "$out" "$(cat "$ROOT/skills/tailshare/SKILL.md")" "the skill, as in the repository"
+}
+
 run_tests

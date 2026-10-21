@@ -8,6 +8,7 @@ What is served for a path is decided by **adapters**, which you can add by dropp
 tailshare report.html              # a page and the files it refers to, for an hour
 tailshare -t 0 ./dist              # a built site, until Ctrl-C
 tailshare -t 10m App.ipa           # an iPhone install page, for ten minutes
+tailshare --once --qr build.zip    # one download, by scanning the QR code with a phone
 url=$(tailshare -d -q notes.pdf)   # in the background; keep the URL
 tailshare --list                   # what is being shared now
 tailshare --stop all               # stop it all
@@ -21,6 +22,7 @@ tailshare --list                show running shares
 tailshare --stop <port|all>     stop running shares
 tailshare --adapters            list the adapters
 tailshare --which <path>        show which adapter would serve a path
+tailshare --skill               print the skill for AI agents (SKILL.md)
 ```
 
 | Option | |
@@ -28,6 +30,10 @@ tailshare --which <path>        show which adapter would serve a path
 | `-p, --port PORT` | tailnet HTTPS port. Default: the first of 10443, 11443, … that `tailscale serve` does not use. A port in use is refused. |
 | `-t, --time TIME` | Stop after TIME: `90` (seconds), `30s`, `10m`, `2h`, or `0` for never. Default: `1h`. |
 | `-a, --as NAME` | Use this adapter whatever the path is: `ipa`, `html`, `dir`, `file`, … |
+| `--once` | Stop once the thing has been downloaded completely: the file, the IPA (not its install page), the page. Ten seconds later, so a page can load the rest. A download in ranges counts when its last part has been sent. |
+| `--secret` | Put an unguessable token (128 bits) in the URL: `https://host:10443/<token>/report.html`. Anything without it is not found. |
+| `--allow LOGIN` | Only let these tailnet users open it: their login (`alice@example.com`) or a glob (`*@example.com`). Repeat it, or separate with commas. Anyone else gets 403. |
+| `--qr` | Also show the URL as a QR code on stderr, to open it with a phone camera. |
 | `-d, --detach` | Serve in the background: print the URL and return at once. Stop it with `--stop`, or let `--time` end it. |
 | `-j, --json` | Print one JSON object per line instead of plain text (serving, `--list`, `--adapters`, `--which`). |
 | `-q, --quiet` | Print nothing to stderr: no messages, no request log. |
@@ -35,6 +41,7 @@ tailshare --which <path>        show which adapter would serve a path
 | `--stop TARGET` | Stop the share on port TARGET, or all of them with `all`. |
 | `--adapters` | List the adapters in the order they are tried. |
 | `--which PATH` | Show which adapter would serve PATH; serve nothing. |
+| `--skill` | Print the skill that teaches AI agents to use tailshare (see [For AI agents](#for-ai-agents)). |
 | `-h, --help` / `-V, --version` | Show the help / the version. |
 
 Short options without values can be combined: `-dqj`.
@@ -42,7 +49,7 @@ Short options without values can be combined: `-dqj`.
 ### Output and exit status
 
 - **stdout** carries only the result: the URL when serving (one line), or the listing.
-- **stderr** carries messages and the request log, unless `--quiet`.
+- **stderr** carries messages and the request log, unless `--quiet`. The log says who opened it, as tailscale tells: `14:05:09 GET /report.html 200 (alice@example.com)`.
 - With `--json`, serving prints:
 
   ```json
@@ -51,13 +58,31 @@ Short options without values can be combined: `-dqj`.
   ```
 
   `expires` is `null` with `--time 0`. `--list --json` prints the same object for each share.
-- Exit status: `0` served and stopped normally (time up, Ctrl-C, `--stop`) or the query succeeded; `1` an error (no such path, no adapter, port in use, tailscale not running, …); `2` wrong arguments.
+- Exit status: `0` served and stopped normally (time up, `--once`, Ctrl-C, `--stop`) or the query succeeded; `1` an error (no such path, no adapter, port in use, tailscale not running, your home directory or the root of a disk given to serve, …); `2` wrong arguments.
 
-### For scripts and AI agents
+### Who can open it
+
+- Devices on your tailnet, and nobody else; `tailscale serve` never exposes it to the internet.
+- `--allow` narrows that to the users you name. It goes by the login `tailscale serve` adds to each request (`Tailscale-User-Login`), which it removes from what a client sends, so it cannot be forged from the tailnet. Tagged devices have no login and are refused. Someone logged in to the serving machine itself can reach the local server directly; `--allow` does not guard against them.
+- `--secret` makes the URL the key: only those you give it to can open it, even on a shared tailnet.
+- A directory that is your home directory, holds it, or is the root of a disk is refused. Serve the folder you mean.
+
+### For scripts
 
 - Use `-d -j` (or `-d -q`): the command returns as soon as the share is up, with the URL on stdout. Nothing else needs to keep running in your session.
 - Find what is running with `--list --json`, and stop it with `--stop <port>`. Shares also stop by themselves after `--time` (one hour by default), so a forgotten one does not stay up.
 - Use `--which --json <path>` to check what would be served before serving it.
+
+### For AI agents
+
+tailshare carries a skill (`SKILL.md`, the Agent Skills format) that tells an agent when and how to use it: share detached, hand over the URL as a link, stop what it started. Install it for Claude Code and for Codex:
+
+```sh
+mkdir -p ~/.claude/skills/tailshare && tailshare --skill > ~/.claude/skills/tailshare/SKILL.md
+mkdir -p ~/.codex/skills/tailshare && tailshare --skill > ~/.codex/skills/tailshare/SKILL.md
+```
+
+From a clone, link `skills/tailshare` there instead, so it follows `git pull`. Run it again after updating tailshare otherwise.
 
 ## Built-in adapters
 
@@ -103,9 +128,9 @@ prepare <path> <site> <base-url>
 |---|---|
 | `<path>` | What to serve, as an absolute path. |
 | `<site>` | An empty directory: whatever is put here is served under `<base-url>/`. Link to the path rather than copy it. |
-| `<base-url>` | `https://<host>:<port>`, for things that need absolute URLs, such as a manifest. |
+| `<base-url>` | Where `<site>` is served: `https://<host>:<port>`, or `https://<host>:<port>/<token>` with `--secret`. For things that need absolute URLs, such as a manifest. |
 | `TAILSHARE_ADAPTER_DIR` | The adapter's own directory, to read its templates from. |
-| stdout | The last line is the path to open, such as `/` or `/report.html`. tailshare URL-encodes it. |
+| stdout | The last line is the path to open, such as `/` or `/report.html`. tailshare URL-encodes it. With `--once`, the share ends after this path has been downloaded completely. |
 | exit status | Anything but 0 stops tailshare without serving; say why on stderr. |
 
 A `prepare` that serves one file, as the built-in `file` adapter does:
@@ -123,10 +148,10 @@ echo "/$name"
 
 1. The adapter decides what to serve. An adapter of your own fills a temporary directory.
 2. tailshare serves it itself, on a free port of `127.0.0.1`.
-3. `tailscale serve --bg --https=<port>` exposes that port to the tailnet.
-4. When the time is up, on Ctrl-C, or on `--stop`, tailshare runs `tailscale serve --https=<port> off`, stops the server, and removes the temporary directory and its record.
+3. It runs `tailscale serve --https=<port> http://127.0.0.1:<port>` in the foreground, as a child, to expose that port to the tailnet. Such a config lasts only as long as the child: tailscale removes it when the child goes, and it does not survive a restart.
+4. When the time is up, on `--once`, Ctrl-C or `--stop`, tailshare stops the child, waits until the port is free, stops its server, and removes the temporary directory and its record.
 
-Running shares are recorded in `~/.local/state/tailshare/<port>` (or `$TAILSHARE_STATE_DIR`), which is how `--list` and `--stop` find them. A share that is gone without cleaning up after itself (killed with `-9`, a crash) is cleaned up the next time they look: its record, log and temporary directory are removed, and its port is turned off if it still points at the share's own server.
+Running shares are recorded in `~/.local/state/tailshare/<port>` (or `$TAILSHARE_STATE_DIR`), which is how `--list` and `--stop` find them. A share that is gone without cleaning up after itself (killed with `-9`, a crash) is cleaned up the next time they look: its record, log and temporary directory are removed, and its `tailscale serve` is stopped if the port still points at the share's own server.
 
 The local server is needed because the macOS Tailscale app cannot serve files itself: `tailscale serve <path>` is blocked by its sandbox.
 
