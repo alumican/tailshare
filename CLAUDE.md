@@ -20,11 +20,17 @@ Usage and the adapter contract are in README.md. This file is for whoever change
 
 ## Testing
 
-There is no test suite yet; changes were checked by hand, serving for real:
+```sh
+tests/run                  # everything but the live tests, about 40 seconds
+tests/run --live           # also serve over the tailnet with the real tailscale
+tests/run tests/serve.test.sh
+TEST_FILTER=stop tests/run
+```
 
-- each adapter (`ipa`, `html` with nested CSS references, `dir` with hidden entries, `file` with spaces in its name), checking HTTP status codes with `curl`;
-- `--detach`, `--json`, `--list`, `--stop <port>` / `all` / unknown port, time-up of a detached share;
-- afterwards: `tailscale serve status` shows no leftover port, `$TMPDIR/tailshare.*` and `~/.local/state/tailshare/` are empty.
+- `tests/fake/tailscale` stands in for tailscale: it keeps its serve config in the sandbox and can play a daemon that is down, off (`Stopped`), logged out, or whose `serve` fails. Every test but `live.test.sh` uses it, so they never touch the real `tailscale serve` config and can run while other shares are up.
+- Each test gets its own sandbox: `TMPDIR`, `XDG_CONFIG_HOME`, `TAILSHARE_STATE_DIR` and the fake's state all live in it. After each way of stopping, `assert_clean` checks that the serve config, the state directory and the temporary directory are empty.
+- `live.test.sh` serves for real, fetches the URL over HTTPS, and checks that the ports other services use are the same before and after. Run it after changing how tailscale is called.
+- A test is a `test_*` function in a `*.test.sh` file, which ends with `run_tests` (see `tests/lib.sh`). Give a command that should be refused a short `--time`, so a regression ends in seconds instead of serving for an hour.
 
 ## Users
 

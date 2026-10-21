@@ -1,0 +1,30 @@
+#!/bin/bash
+# Run the tests: tests/run [--live] [file.test.sh ...]
+#   --live         also run live.test.sh, which serves over the tailnet with the real tailscale
+#   TEST_FILTER    run only the tests whose name contains it
+# Every other test uses a fake tailscale, so it never touches the real tailscale serve config.
+set -uo pipefail
+
+tests="$(cd "$(dirname "$0")" && pwd -P)"
+files=()
+if [[ "${1:-}" == --live ]]; then
+	export TAILSHARE_LIVE=1
+	shift
+fi
+if (($#)); then
+	files=("$@")
+else
+	for file in "$tests"/*.test.sh; do
+		files+=("$file")
+	done
+fi
+
+failed=0
+for file in "${files[@]}"; do
+	bash "$file" || failed=$((failed + 1))
+done
+if ((failed)); then
+	echo "# $failed of ${#files[@]} files had failures"
+	exit 1
+fi
+echo "# all passed"

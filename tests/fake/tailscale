@@ -1,0 +1,49 @@
+#!/bin/bash
+# A stand-in for the tailscale CLI, for the parts tailshare uses. It never touches the real tailscale.
+#
+#   FAKE_TAILSCALE_DIR     where it keeps its serve config (serve/<port> holds the target) and its call log
+#   FAKE_TAILSCALE_STATE   what `status` reports: Running (default), Stopped, NeedsLogin, ...,
+#                          or "down" for a daemon that does not answer
+#   FAKE_TAILSCALE_SERVE   "fail" makes `serve --bg` fail
+set -euo pipefail
+
+dir="${FAKE_TAILSCALE_DIR:?FAKE_TAILSCALE_DIR is not set}"
+state="${FAKE_TAILSCALE_STATE:-Running}"
+mkdir -p "$dir/serve"
+echo "$*" >> "$dir/calls"
+
+if [[ "$state" == down ]]; then
+	echo "failed to connect to local Tailscale service; is Tailscale running?" >&2
+	exit 1
+fi
+
+case "$*" in
+	"status --json")
+		printf '{"BackendState": "%s", "Self": {"DNSName": "host.example.ts.net.", "Online": true}}\n' "$state"
+		;;
+	"serve status --json")
+		tcp=""
+		for file in "$dir/serve"/*; do
+			[[ -f "$file" ]] || continue
+			tcp+="${tcp:+, }\"$(basename "$file")\": {\"HTTPS\": true}"
+		done
+		if [[ -n "$tcp" ]]; then
+			echo "{\"TCP\": {$tcp}}"
+		else
+			echo "{}"
+		fi
+		;;
+	"serve --bg --https="*)
+		[[ "${FAKE_TAILSCALE_SERVE:-}" != fail ]] || { echo "serve: HTTPS is not enabled" >&2; exit 1; }
+		port="${3#--https=}"
+		echo "$4" > "$dir/serve/$port"
+		;;
+	"serve --https="*" off")
+		port="${2#--https=}"
+		rm -f "$dir/serve/$port"
+		;;
+	*)
+		echo "fake tailscale: not implemented: $*" >&2
+		exit 1
+		;;
+esac
