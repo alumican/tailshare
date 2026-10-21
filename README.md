@@ -181,11 +181,15 @@ The local server is needed because the macOS Tailscale app cannot serve files it
 
 ## Install
 
-Download the archive for your platform from [Releases](https://github.com/alumican/tailshare/releases) and put `tailshare` on your `PATH`. For example, on a Mac with Apple Silicon:
+### From a release
+
+Download the archive for your platform from [Releases](https://github.com/alumican/tailshare/releases) and put `tailshare` on your `PATH`. For example, on a Mac with Apple Silicon, into `~/.local/bin`:
 
 ```sh
+mkdir -p ~/.local/bin
 curl -fsSL https://github.com/alumican/tailshare/releases/latest/download/tailshare_darwin_arm64.tar.gz \
   | tar -xz -C ~/.local/bin tailshare
+tailshare --version
 ```
 
 | | Archive |
@@ -194,16 +198,23 @@ curl -fsSL https://github.com/alumican/tailshare/releases/latest/download/tailsh
 | Linux, x86-64 / ARM | `tailshare_linux_amd64.tar.gz` / `tailshare_linux_arm64.tar.gz` |
 | Windows, x86-64 / ARM | `tailshare_windows_amd64.zip` / `tailshare_windows_arm64.zip` |
 
-- Each release has `SHA256SUMS` to check the archives against, and the source code.
-- The macOS binary is not signed. Downloaded with `curl` it just runs; downloaded with a browser, macOS blocks it until you run `xattr -d com.apple.quarantine tailshare`.
+- Each archive holds the binary, `README.md` and `LICENSE`. The `latest/download/` URLs always get the newest release.
+- To check an archive, download `SHA256SUMS` from the same release and run `shasum -a 256 -c --ignore-missing SHA256SUMS` (or `sha256sum -c --ignore-missing SHA256SUMS` on Linux) next to it.
+- macOS: the binary is not signed. Downloaded with `curl` it just runs; downloaded with a browser, macOS blocks it until you run `xattr -d com.apple.quarantine tailshare`.
+- Linux: `tailscale serve` needs root, so allow yourself once: `sudo tailscale set --operator=$USER`.
+- Windows: unzip `tailshare.exe` into a folder on your `PATH`. Untested so far (see [Platforms](#platforms)).
 
-With Go 1.24 or later:
+### With Go
+
+With Go 1.24 or later, into `$(go env GOPATH)/bin`:
 
 ```sh
-go install github.com/alumican/tailshare/cmd/tailshare@latest     # into $(go env GOPATH)/bin
+go install github.com/alumican/tailshare/cmd/tailshare@latest
 ```
 
-Or from a clone, building the binary into `bin/` and linking it onto your `PATH` (build again after `git pull`):
+### From a clone
+
+Build the binary into `bin/` and link it onto your `PATH`; build again after `git pull`:
 
 ```sh
 git clone https://github.com/alumican/tailshare && cd tailshare
@@ -211,14 +222,21 @@ go build -o bin/ ./cmd/tailshare
 ln -s "$PWD/bin/tailshare" ~/.local/bin/tailshare
 ```
 
+### The skills for AI agents
+
+To have Claude Code or Codex use tailshare on its own, install its skill: see [For AI agents](#for-ai-agents).
+
 ## Development
 
 ```sh
-tests/run          # go vet, go test, a build for each platform, and the command line tests
-tests/run --live   # also serve over the tailnet with the real tailscale
+go build -o bin/ ./cmd/tailshare                                   # build for this machine
+GOOS=linux GOARCH=arm64 go build -o bin/linux-arm64/ ./cmd/tailshare # for another platform
+tests/run                                                          # go vet, go test, a build for each platform, the command line tests
+tests/run --live                                                   # also serve over the tailnet with the real tailscale
+scripts/release v1.2.3                                             # the release archives and SHA256SUMS, into dist/
 ```
 
-See `CLAUDE.md` for the principles and how the tests work.
+A release is made by pushing a tag such as `v1.2.3`; GitHub Actions tests it and publishes the archives. See `CLAUDE.md` for the steps, the principles and how the tests work.
 
 ## License
 
