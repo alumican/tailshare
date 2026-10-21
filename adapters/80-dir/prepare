@@ -1,0 +1,10 @@
+#!/bin/bash
+# Serve a directory at /, so a built site finds its files where it expects them: its index.html, or a listing.
+# Hidden entries at the top (.git, .env, ...) are left out. The top is taken as it is now; what is inside follows live.
+set -euo pipefail
+input="$1" site="$2"
+for entry in "$input"/*; do
+	[[ -e "$entry" ]] || continue
+	ln -s "$entry" "$site/$(basename "$entry")"
+done
+echo "/"

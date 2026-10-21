@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Serve an HTML page with the local files it refers to, and nothing else from its directory.
+
+References are followed in src, href, srcset, poster and inline styles, in <style>, and on into the
+style sheets the page uses (url(...) and @import), as long as they stay inside the page's directory.
+Files a script loads by itself (fetch, import maps, ...) are not found: serve the directory instead.
+"""
+import os
+import re
+import sys
+from html.parser import HTMLParser
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+page, site = Path(sys.argv[1]), Path(sys.argv[2])
+top = page.parent.resolve()
+# The page as seen from its directory, even if the page itself is a link to somewhere else
+page = top / page.name
+
+CSS_REFERENCE = re.compile(r"""url\(\s*['"]?([^'")]+?)['"]?\s*\)|@import\s+['"]([^'"]+)['"]""")
+
+
+def css_references(text):
+    return [url or imported for url, imported in CSS_REFERENCE.findall(text)]
+
+
+class References(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.found = []
+        self.in_style = False
+
+    def handle_starttag(self, tag, attrs):
+        self.in_style = tag == "style"
+        for key, value in attrs:
+            if not value:
+                continue
+            if key in ("src", "href", "poster", "data"):
+                self.found.append(value)
+            elif key in ("srcset", "imagesrcset"):
+                self.found += [candidate.split()[0] for candidate in value.split(",") if candidate.strip()]
+            elif key == "style":
+                self.found += css_references(value)
+
+    def handle_endtag(self, tag):
+        if tag == "style":
+            self.in_style = False
+
+    def handle_data(self, data):
+        if self.in_style:
+            self.found += css_references(data)
+
+
+def resolve(reference, referrer):
+    """The local file a reference points to, if it stays inside the page's directory."""
+    parts = urlsplit(reference.strip())
+    if parts.scheme or parts.netloc or not parts.path:
+        return None
+    path = unquote(parts.path)
+    target = (top / path.lstrip("/")) if path.startswith("/") else (referrer.parent / path)
+    target = target.resolve()
+    if target != top and top not in target.parents:
+        return None
+    return target if target.is_file() else None
+
+
+def link(target):
+    destination = site / target.relative_to(top)
+    if destination.exists() or destination.is_symlink():
+        return False
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(target, destination)
+    return True
+
+
+def follow(file, references):
+    for reference in references:
+        target = resolve(reference, file)
+        if target and link(target) and target.suffix.lower() == ".css":
+            follow(target, css_references(target.read_text(encoding="utf-8", errors="replace")))
+
+
+os.symlink(page.resolve(), site / page.name)
+parser = References()
+parser.feed(page.read_text(encoding="utf-8", errors="replace"))
+follow(page, parser.found)
+print("/" + page.name)

@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Serve an install page for an iOS app: open it in Safari on an iPhone and tap Install.
+
+The page and the manifest are made from index.html and manifest.plist next to this script.
+iOS installs only IPAs signed for development or ad hoc, on devices registered for them.
+"""
+import html
+import os
+import plistlib
+import sys
+import time
+import zipfile
+from pathlib import Path
+from string import Template
+from urllib.parse import quote
+from xml.sax.saxutils import escape
+
+ipa, site, base = sys.argv[1:4]
+here = Path(os.environ.get("TAILSHARE_ADAPTER_DIR") or Path(__file__).resolve().parent)
+
+try:
+    with zipfile.ZipFile(ipa) as archive:
+        plist = next(n for n in archive.namelist() if n.startswith("Payload/") and n.count("/") == 2 and n.endswith(".app/Info.plist"))
+        info = plistlib.loads(archive.read(plist))
+except (zipfile.BadZipFile, StopIteration, plistlib.InvalidFileException) as error:
+    sys.exit(f"not an iOS app archive: {ipa} ({error.__class__.__name__})")
+
+name = Path(ipa).name
+os.symlink(ipa, Path(site, name))
+
+title = info.get("CFBundleDisplayName") or info.get("CFBundleName") or Path(ipa).stem
+version = info.get("CFBundleShortVersionString", "")
+modified = int(os.path.getmtime(ipa))
+# The modification time busts the device's cache, so a rebuilt IPA is always downloaded
+ipa_url = f"{base}/{quote(name)}?v={modified}"
+manifest_url = f"{base}/manifest.plist"
+
+manifest = Template((here / "manifest.plist").read_text(encoding="utf-8")).substitute(
+    ipa_url=escape(ipa_url),
+    bundle_id=escape(info["CFBundleIdentifier"]),
+    version=escape(version),
+    title=escape(title),
+)
+Path(site, "manifest.plist").write_text(manifest, encoding="utf-8")
+
+page = Template((here / "index.html").read_text(encoding="utf-8")).substitute(
+    title=html.escape(title),
+    version=html.escape(version),
+    built=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(modified)),
+    install_url=html.escape(f"itms-services://?action=download-manifest&url={manifest_url}"),
+)
+Path(site, "index.html").write_text(page, encoding="utf-8")
+print("/")
