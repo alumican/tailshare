@@ -152,7 +152,7 @@ The local server is needed because the macOS Tailscale app cannot serve files it
 
 - `tailscale`, with HTTPS certificates enabled on the tailnet. If it is not on `PATH`, the one in `/Applications/Tailscale.app` (macOS) or `C:\Program Files\Tailscale` (Windows) is used.
 - Nothing else at run time: tailshare is a single binary.
-- To build it yourself: Go 1.22 or later. It uses the standard library only.
+- To build it yourself: Go 1.24 or later (earlier ones make macOS binaries that recent macOS refuses to run). It uses the standard library only.
 
 ## Install
 
@@ -172,7 +172,7 @@ curl -fsSL https://github.com/alumican/tailshare/releases/latest/download/tailsh
 - Each release has `SHA256SUMS` to check the archives against, and the source code.
 - The macOS binary is not signed. Downloaded with `curl` it just runs; downloaded with a browser, macOS blocks it until you run `xattr -d com.apple.quarantine tailshare`.
 
-With Go 1.22 or later:
+With Go 1.24 or later:
 
 ```sh
 go install github.com/alumican/tailshare@latest     # into $(go env GOPATH)/bin

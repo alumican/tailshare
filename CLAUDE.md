@@ -57,6 +57,7 @@ go test ./internal/...     # the Go tests alone
 3. `.github/workflows/release.yml` runs the tests on macOS and Linux, then `scripts/release`, and publishes a GitHub release with an archive per platform and `SHA256SUMS`. GitHub adds the source.
 
 - `scripts/release v1.2.3` builds the same archives into `dist/` locally; it refuses a tag that does not match `main.go`.
+- Releases and CI build with the latest stable Go, for its security fixes. `go.mod` says 1.24, the oldest that works: earlier linkers leave out `LC_UUID`, and macOS 26 refuses to run such binaries (`dyld: missing LC_UUID load command`). The `oldest-go` job checks that 1.24 still builds.
 - Stay on v1: from v2 on, Go needs the module path to end in `/v2`, which changes `go install` for everyone.
 - `.github/workflows/test.yml` runs `tests/run` (without `--live`) on macOS and Linux for every push to `main`.
 
