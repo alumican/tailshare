@@ -9,6 +9,7 @@ Writes the port it listens on to the file given, then serves:
 """
 import http.server
 import json
+import socketserver
 import sys
 import time
 
@@ -57,7 +58,15 @@ class App(http.server.BaseHTTPRequestHandler):
         pass
 
 
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), App)
+class Server(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind looks up this host's name (socket.getfqdn), which can take
+        # half a minute on a CI runner; the name is not needed
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
+server = Server(("127.0.0.1", 0), App)
 with open(sys.argv[1], "w") as f:
     f.write(str(server.server_address[1]))
 server.serve_forever()
