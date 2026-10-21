@@ -50,6 +50,16 @@ go test ./internal/...     # the Go tests alone
 - `live.test.sh` serves for real, fetches the URL over HTTPS, and checks that the ports other services use are the same before and after. Run it after changing how tailscale is called.
 - Give a command that should be refused a short `--time`, so a regression ends in seconds instead of serving for an hour.
 
+## Releasing
+
+1. Set `version` in `main.go` (`1.2.3`) and commit it.
+2. `git tag v1.2.3 && git push origin main v1.2.3`.
+3. `.github/workflows/release.yml` runs the tests on macOS and Linux, then `scripts/release`, and publishes a GitHub release with an archive per platform and `SHA256SUMS`. GitHub adds the source.
+
+- `scripts/release v1.2.3` builds the same archives into `dist/` locally; it refuses a tag that does not match `main.go`.
+- Stay on v1: from v2 on, Go needs the module path to end in `/v2`, which changes `go install` for everyone.
+- `.github/workflows/test.yml` runs `tests/run` (without `--live`) on macOS and Linux for every push to `main`.
+
 ## Users
 
 - iOS projects build an IPA in their own OTA script and `exec tailshare` on it. Keep the CLI and the exit status stable for them.

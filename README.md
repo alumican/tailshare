@@ -152,23 +152,39 @@ The local server is needed because the macOS Tailscale app cannot serve files it
 
 - `tailscale`, with HTTPS certificates enabled on the tailnet. If it is not on `PATH`, the one in `/Applications/Tailscale.app` (macOS) or `C:\Program Files\Tailscale` (Windows) is used.
 - Nothing else at run time: tailshare is a single binary.
-- To build it: Go 1.22 or later. It uses the standard library only.
+- To build it yourself: Go 1.22 or later. It uses the standard library only.
 
 ## Install
+
+Download the archive for your platform from [Releases](https://github.com/alumican/tailshare/releases) and put `tailshare` on your `PATH`. For example, on a Mac with Apple Silicon:
+
+```sh
+curl -fsSL https://github.com/alumican/tailshare/releases/latest/download/tailshare_darwin_arm64.tar.gz \
+  | tar -xz -C ~/.local/bin tailshare
+```
+
+| | Archive |
+|---|---|
+| macOS, Apple Silicon / Intel | `tailshare_darwin_arm64.tar.gz` / `tailshare_darwin_amd64.tar.gz` |
+| Linux, x86-64 / ARM | `tailshare_linux_amd64.tar.gz` / `tailshare_linux_arm64.tar.gz` |
+| Windows, x86-64 / ARM | `tailshare_windows_amd64.zip` / `tailshare_windows_arm64.zip` |
+
+- Each release has `SHA256SUMS` to check the archives against, and the source code.
+- The macOS binary is not signed. Downloaded with `curl` it just runs; downloaded with a browser, macOS blocks it until you run `xattr -d com.apple.quarantine tailshare`.
+
+With Go 1.22 or later:
 
 ```sh
 go install github.com/alumican/tailshare@latest     # into $(go env GOPATH)/bin
 ```
 
-Or from a clone, building the binary in place and linking it onto your `PATH`:
+Or from a clone, building the binary in place and linking it onto your `PATH` (run `go build` again after `git pull`):
 
 ```sh
 git clone https://github.com/alumican/tailshare && cd tailshare
 go build
 ln -s "$PWD/tailshare" ~/.local/bin/tailshare
 ```
-
-After `git pull`, run `go build` again.
 
 ## Development
 
@@ -178,3 +194,7 @@ tests/run --live   # also serve over the tailnet with the real tailscale
 ```
 
 See `CLAUDE.md` for the principles and how the tests work.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -18,7 +18,7 @@ import (
 )
 
 // Set by a release build: go build -ldflags "-X main.version=..."
-var version = "3.0.0"
+var version = "1.0.0"
 
 var prog = filepath.Base(os.Args[0])
 
