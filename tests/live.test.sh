@@ -91,6 +91,50 @@ test_secret_and_allow_over_the_tailnet() {
 	assert_clean
 }
 
+test_share_a_server_over_the_tailnet() {
+	live
+	start_app
+	run "$TAILSHARE" -d -j --secret "http://127.0.0.1:$APP_PORT"
+	assert_status 0
+	local url port pid
+	url="$(json_get "$out" url)" port="$(json_get "$out" port)" pid="$(json_get "$out" pid)"
+	STARTED="$STARTED $pid"
+	python3 - "$url" "$port" << 'EOF' || fail "through the tailnet"
+import http.cookiejar, json, sys, time, urllib.error, urllib.request
+url, port = sys.argv[1:3]
+origin = url.split("/" + url.split("/")[3] + "/")[0]
+browser = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+def status(opener, path):
+    try:
+        with opener.open(origin + path, timeout=10) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+assert status(browser, "/api/hello") == 404, "an absolute link before opening the URL"
+with browser.open(url, timeout=10) as response:
+    assert b'href="/api/hello"' in response.read()
+# The page's own absolute link, with the cookie the URL set
+with browser.open(origin + "/api/hello", timeout=10) as response:
+    seen = json.load(response)
+assert seen["host"].startswith("127.0.0.1:"), seen
+assert seen["forwardedHost"].endswith(":" + port), seen
+assert "@" in seen["login"], seen
+body = b"x" * (20 << 20)
+with browser.open(urllib.request.Request(origin + "/upload", data=body, method="POST"), timeout=60) as response:
+    received = response.read().decode()
+    assert received == str(len(body)), f"the app received {received} bytes of {len(body)}"
+start = time.time()
+with browser.open(origin + "/stream", timeout=10) as response:
+    first = response.readline()
+    elapsed = time.time() - start
+    assert first == b"data: first\n" and elapsed < 0.9, f"first event {first!r} after {elapsed:.2f}s"
+EOF
+	run "$TAILSHARE" --stop "$port"
+	assert_status 0
+	assert_others_untouched
+	assert_clean
+}
+
 test_a_port_held_in_the_foreground_is_refused() {
 	live
 	# A port nothing uses, held by a tailscale serve in the foreground, as another tool would

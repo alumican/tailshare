@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base32"
 	"encoding/json"
 	"errors"
@@ -119,28 +120,47 @@ func serve(o options, a adapter.Adapter, abs string, seconds int) {
 		exit(0)
 	}()
 
-	// An adapter of your own fills a directory, removed on exit; adapters link to the path rather than copy it
-	siteDir := ""
-	if !a.Builtin() {
-		tmp, err = os.MkdirTemp("", "tailshare.")
+	// What answers requests: a server on this machine, or the site an adapter prepares
+	var (
+		content  http.Handler
+		shareURL string
+		mainPath string // what --once waits for
+	)
+	if o.proxy != nil {
+		content = newProxy(o.proxy)
+		shareURL = base + o.proxy.EscapedPath()
+		if o.proxy.Path == "" {
+			shareURL += "/"
+		}
+		if o.proxy.RawQuery != "" {
+			shareURL += "?" + o.proxy.RawQuery
+		}
+	} else {
+		// An adapter of your own fills a directory, removed on exit; adapters link to the path rather than copy it
+		siteDir := ""
+		if !a.Builtin() {
+			tmp, err = os.MkdirTemp("", "tailshare.")
+			if err != nil {
+				die("cannot make a temporary directory: %v", err)
+			}
+			siteDir = filepath.Join(tmp, "site")
+			os.Mkdir(siteDir, 0o755)
+		}
+		prepared, err := a.Prepare(abs, base, siteDir)
 		if err != nil {
-			die("cannot make a temporary directory: %v", err)
+			var exitError *exec.ExitError
+			switch {
+			case errors.Is(err, adapter.ErrNoPath):
+				die("adapter %s %v", a.Name(), err)
+			case !errors.As(err, &exitError):
+				fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+			}
+			die("adapter %s failed for %s", a.Name(), o.path)
 		}
-		siteDir = filepath.Join(tmp, "site")
-		os.Mkdir(siteDir, 0o755)
+		content = http.FileServerFS(prepared.FS)
+		shareURL = base + escapePath(prepared.Open)
+		mainPath = prepared.Main
 	}
-	prepared, err := a.Prepare(abs, base, siteDir)
-	if err != nil {
-		var exitError *exec.ExitError
-		switch {
-		case errors.Is(err, adapter.ErrNoPath):
-			die("adapter %s %v", a.Name(), err)
-		case !errors.As(err, &exitError):
-			fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
-		}
-		die("adapter %s failed for %s", a.Name(), o.path)
-	}
-	shareURL := base + escapePath(prepared.Open)
 
 	var handedOver func(string)
 	if o.once {
@@ -157,8 +177,8 @@ func serve(o options, a adapter.Adapter, abs string, seconds int) {
 		die("cannot start the local server: %v", err)
 	}
 	target := "http://" + listener.Addr().String()
-	handler := &shareHandler{files: http.FileServerFS(prepared.FS), token: token, allow: o.allow, main: prepared.Main,
-		handedOver: handedOver, quiet: o.quiet}
+	handler := &shareHandler{content: content, token: token, cookie: fmt.Sprintf("tailshare_%d", port), allow: o.allow,
+		main: mainPath, handedOver: handedOver, quiet: o.quiet}
 	server = &http.Server{Handler: handler, ReadHeaderTimeout: 30 * time.Second}
 	go func() {
 		if err := server.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
@@ -263,11 +283,12 @@ func init() {
 
 // MARK: - Requests
 
-// shareHandler serves the site to whoever may open it, logs each request, and tells when the main
-// file has been handed over (--once).
+// shareHandler serves the site, or passes requests on to a server, for whoever may open it; logs
+// each request; and tells when the main file has been handed over (--once).
 type shareHandler struct {
-	files      http.Handler
-	token      string   // the first path segment every URL must have (--secret), or empty
+	content    http.Handler
+	token      string   // the first path segment of the URL (--secret), or empty
+	cookie     string   // the cookie that carries the token once the URL has been opened
 	allow      []string // logins or globs that may open it (--allow); anyone on the tailnet when empty
 	main       string   // the path whose complete download hands the thing over
 	handedOver func(path string)
@@ -294,27 +315,37 @@ func (h *shareHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	path := r.URL.Path
 	if h.token != "" {
+		// The token comes in the URL, or, once the URL has been opened, in a cookie: a page's own
+		// links that start with / (a built site's /assets/..., an app's /api/...) have no token
 		prefix := "/" + h.token
 		switch {
 		case path == prefix:
 			http.Redirect(recorder, r, prefix+"/", http.StatusMovedPermanently)
 			return
-		case !strings.HasPrefix(path, prefix+"/"):
+		case strings.HasPrefix(path, prefix+"/"):
+			http.SetCookie(recorder, &http.Cookie{Name: h.cookie, Value: h.token, Path: "/", HttpOnly: true, Secure: true,
+				SameSite: http.SameSiteLaxMode})
+			// From here on, and in the log, the path is the one inside the site, without the token
+			path = strings.TrimPrefix(path, prefix)
+			stripped := r.Clone(r.Context())
+			stripped.URL.Path = path
+			stripped.URL.RawPath = ""
+			r = stripped
+		case !h.hasCookie(r):
 			http.NotFound(recorder, r)
 			return
 		}
-		// From here on, and in the log, the path is the one inside the site, without the token
-		path = strings.TrimPrefix(path, prefix)
-		stripped := r.Clone(r.Context())
-		stripped.URL.Path = path
-		stripped.URL.RawPath = ""
-		r = stripped
 	}
-	h.files.ServeHTTP(recorder, r)
+	h.content.ServeHTTP(recorder, r)
 
 	if h.handedOver != nil && r.Method == http.MethodGet && isMain(path, h.main) && recorder.Complete() {
 		h.handedOver(h.main)
 	}
+}
+
+func (h *shareHandler) hasCookie(r *http.Request) bool {
+	cookie, err := r.Cookie(h.cookie)
+	return err == nil && subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(h.token)) == 1
 }
 
 // Who asked, as tailscale serve says: the login of a tailnet user, or empty for a tagged device.
@@ -371,6 +402,24 @@ func (r *recorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// Flush and Hijack pass through, so streamed responses and upgraded connections (WebSocket) of a
+// server behind a share reach the client; Unwrap lets http.ResponseController find them too
+func (r *recorder) Flush() {
+	http.NewResponseController(r.ResponseWriter).Flush()
+}
+
+func (r *recorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := http.NewResponseController(r.ResponseWriter).Hijack()
+	if err == nil && r.status == 0 {
+		r.status = http.StatusSwitchingProtocols
+	}
+	return conn, rw, err
+}
+
+func (r *recorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 func (r *recorder) Status() int {
 	if r.status == 0 {
 		return http.StatusOK
@@ -421,7 +470,10 @@ func detach(o options, a adapter.Adapter, abs string) {
 		die("cannot find myself: %v", err)
 	}
 
-	args := []string{"--time", o.timeSpec, "--as", a.ID}
+	args := []string{"--time", o.timeSpec}
+	if o.proxy == nil {
+		args = append(args, "--as", a.ID)
+	}
 	if o.port != "" {
 		args = append(args, "--port", o.port)
 	}

@@ -138,6 +138,14 @@ fetch() {
 
 # MARK: - Fixtures
 
+# Start tests/fake/app, an app on this machine to share by URL; its port is in $APP_PORT
+start_app() {
+	"$TESTS/fake/app" "$SANDBOX/app.port" > /dev/null 2>&1 &
+	STARTED="$STARTED $!"
+	wait_until 10 test -s "$SANDBOX/app.port" || fail "the app did not start"
+	APP_PORT="$(cat "$SANDBOX/app.port")"
+}
+
 # An IPA with only an Info.plist (binary, as Xcode writes it), which is all the ipa adapter reads
 make_ipa() {
 	python3 - "$1" << 'EOF'

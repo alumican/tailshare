@@ -22,7 +22,7 @@ func newHandler(t *testing.T, token string, allow []string, main string) (*share
 		"App.ipa":    {Path: filepath.Join(dir, "App.ipa")},
 	}
 	var handed []string
-	h := &shareHandler{files: http.FileServerFS(files), token: token, allow: allow, main: main, quiet: true,
+	h := &shareHandler{content: http.FileServerFS(files), token: token, cookie: "tailshare_10443", allow: allow, main: main, quiet: true,
 		handedOver: func(path string) { handed = append(handed, path) }}
 	return h, &handed
 }

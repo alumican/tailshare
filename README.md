@@ -1,6 +1,6 @@
 # tailshare
 
-Serve a file or a directory to your tailnet over HTTPS, and print its URL.
+Serve a file, a directory, or an app running on this machine to your tailnet over HTTPS, and print its URL.
 Only devices on your tailnet can open it. It stops after a set time or on Ctrl-C, and leaves nothing behind.
 What is served for a path is decided by **adapters**, which you can add by dropping in a directory.
 
@@ -9,6 +9,7 @@ tailshare report.html              # a page and the files it refers to, for an h
 tailshare -t 0 ./dist              # a built site, until Ctrl-C
 tailshare -t 10m App.ipa           # an iPhone install page, for ten minutes
 tailshare --once --qr build.zip    # one download, by scanning the QR code with a phone
+tailshare http://127.0.0.1:8765    # an app running on this machine, such as a dev server
 url=$(tailshare -d -q notes.pdf)   # in the background; keep the URL
 tailshare --list                   # what is being shared now
 tailshare --stop all               # stop it all
@@ -18,6 +19,7 @@ tailshare --stop all               # stop it all
 
 ```
 tailshare [options] <path>      serve a path
+tailshare [options] <url>       share a server on this machine: http://127.0.0.1:8765[/path]
 tailshare --list                show running shares
 tailshare --stop <port|all>     stop running shares
 tailshare --adapters            list the adapters
@@ -30,8 +32,8 @@ tailshare --skill claude|codex  print the skill for an AI agent (SKILL.md)
 | `-p, --port PORT` | tailnet HTTPS port. Default: the first of 10443, 11443, … that `tailscale serve` does not use. A port in use is refused. |
 | `-t, --time TIME` | Stop after TIME: `90` (seconds), `30s`, `10m`, `2h`, or `0` for never. Default: `1h`. |
 | `-a, --as NAME` | Use this adapter whatever the path is: `ipa`, `html`, `dir`, `file`, … |
-| `--once` | Stop once the thing has been downloaded completely: the file, the IPA (not its install page), the page. Ten seconds later, so a page can load the rest. A download in ranges counts when its last part has been sent. |
-| `--secret` | Put an unguessable token (128 bits) in the URL: `https://host:10443/<token>/report.html`. Anything without it is not found. |
+| `--once` | Stop once the thing has been downloaded completely: the file, the IPA (not its install page), the page. Ten seconds later, so a page can load the rest. A download in ranges counts when its last part has been sent. Not for a URL. |
+| `--secret` | Put an unguessable token (128 bits) in the URL: `https://host:10443/<token>/report.html`. Opening it sets a cookie, so the page's own links that start with `/` work too; anything else is not found. |
 | `--allow LOGIN` | Only let these tailnet users open it: their login (`alice@example.com`) or a glob (`*@example.com`). Repeat it, or separate with commas. Anyone else gets 403. |
 | `--qr` | Also show the URL as a QR code on stderr, to open it with a phone camera. |
 | `-d, --detach` | Serve in the background: print the URL and return at once. Stop it with `--stop`, or let `--time` end it. |
@@ -58,13 +60,27 @@ Short options without values can be combined: `-dqj`.
   ```
 
   `expires` is `null` with `--time 0`. `--list --json` prints the same object for each share.
-- Exit status: `0` served and stopped normally (time up, `--once`, Ctrl-C, `--stop`) or the query succeeded; `1` an error (no such path, no adapter, port in use, tailscale not running, your home directory or the root of a disk given to serve, …); `2` wrong arguments.
+- Exit status: `0` served and stopped normally (time up, `--once`, Ctrl-C, `--stop`) or the query succeeded; `1` an error (no such path, no adapter, port in use, tailscale not running, your home directory or the root of a disk given to serve, a URL that is not on this machine or does not answer, …); `2` wrong arguments.
+
+### Sharing an app on this machine
+
+Given a URL instead of a path, tailshare shares a server running on this machine, such as a dev server or a local web app, with everything it does for files: the tailnet only, HTTPS, `--time`, `--detach`, `--list`, `--stop`, `--secret`, `--allow`, and nothing left behind.
+
+```sh
+tailshare -d http://127.0.0.1:8765          # the whole server, opened at /
+tailshare -d http://localhost:3000/studio   # opened at /studio
+```
+
+- Requests are passed on by tailshare itself, streaming both ways: uploads of any size, server-sent events, and upgraded connections (WebSocket).
+- The app sees requests addressed to its own host (`Host: 127.0.0.1:8765`, which dev servers often check), with the address it was opened at in `X-Forwarded-Host`, `X-Forwarded-Proto: https`, and who asked in `Tailscale-User-Login`.
+- Only `http://` servers on this machine (`127.0.0.1`, `::1`, `localhost`) can be shared, and only when something answers there.
+- With `--secret`, links in the app that start with `/` work once the URL has been opened, through the cookie it sets.
 
 ### Who can open it
 
 - Devices on your tailnet, and nobody else; `tailscale serve` never exposes it to the internet.
 - `--allow` narrows that to the users you name. It goes by the login `tailscale serve` adds to each request (`Tailscale-User-Login`), which it removes from what a client sends, so it cannot be forged from the tailnet. Tagged devices have no login and are refused. Someone logged in to the serving machine itself can reach the local server directly; `--allow` does not guard against them.
-- `--secret` makes the URL the key: only those you give it to can open it, even on a shared tailnet.
+- `--secret` makes the URL the key: only those you give it to can open it, even on a shared tailnet. Opening it sets a cookie for that share's port (`HttpOnly`, `Secure`, `SameSite=Lax`), which lets the page's own absolute links through.
 - A directory that is your home directory, holds it, or is the root of a disk is refused. Serve the folder you mean.
 
 ### For scripts

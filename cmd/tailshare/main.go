@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -20,12 +21,13 @@ import (
 )
 
 // Set by a release build: go build -ldflags "-X main.version=..."
-var version = "1.1.0"
+var version = "1.2.0"
 
 var prog = filepath.Base(os.Args[0])
 
 func usage() string {
 	return fmt.Sprintf(`Usage: %[1]s [options] <path>      serve a path
+       %[1]s [options] <url>       share a server on this machine (http://127.0.0.1:8765)
        %[1]s --list                show running shares
        %[1]s --stop <port|all>     stop running shares
        %[1]s --adapters            list the adapters
@@ -41,6 +43,7 @@ func help() string {
 
 USAGE
   %[1]s [options] <path>
+  %[1]s [options] http://127.0.0.1:<port>[/path]
   %[1]s --list | --stop <port|all> | --adapters | --which <path> | --skill <agent>
 
 DESCRIPTION
@@ -56,6 +59,11 @@ DESCRIPTION
     anything else   that one file
   See them with --adapters; add your own in %[3]s (README.md).
 
+  Given a URL instead, it shares a server running on this machine, such as a dev
+  server: requests are passed on to it, streaming both ways (large uploads,
+  server-sent events, WebSocket), and the path in the URL is the page to open.
+  Only http:// servers on this machine (127.0.0.1, ::1, localhost) can be shared.
+
 OPTIONS
   -p, --port PORT    tailnet HTTPS port. Default: the first of 10443, 11443, ...
                      that tailscale serve does not use. A port in use is refused.
@@ -64,8 +72,10 @@ OPTIONS
   -a, --as NAME      use this adapter whatever the path is: ipa, html, dir, file, ...
       --once         stop once the thing has been downloaded completely (the file,
                      the IPA, the page), ten seconds later so a page can load the rest.
+                     Not for a URL.
       --secret       put an unguessable token in the URL, so only those who get the
-                     URL can open it.
+                     URL can open it. Opening it sets a cookie, so the page's own
+                     links that start with / work too.
       --allow LOGIN  only let these tailnet users open it: their login, such as
                      alice@example.com, or a glob such as *@example.com. Repeat it,
                      or separate with commas. Tagged devices have no login.
@@ -106,6 +116,7 @@ EXAMPLES
   %[1]s report.html                 share a page for an hour
   %[1]s -t 0 ./dist                 share a built site until Ctrl-C
   %[1]s -t 10m App.ipa              an iPhone install page for ten minutes
+  %[1]s -d http://127.0.0.1:8765    a dev server, in the background
   %[1]s --once --secret --qr a.zip  one download, by whoever scans the code
   url=$(%[1]s -d -q notes.pdf)      share in the background, keep the URL
   %[1]s -d -j build/ | jq -r .url   the same, as JSON
@@ -233,6 +244,7 @@ type options struct {
 	stop     string
 	agent    string // for --skill
 	path     string
+	proxy    *url.URL // when path is the URL of a server on this machine
 }
 
 func parse(args []string) options {
@@ -385,6 +397,9 @@ func main() {
 	if o.path == "" {
 		usageError("no path given")
 	}
+	if isURL(o.path) {
+		shareServer(o)
+	}
 	if port, err := strconv.Atoi(o.port); o.port != "" && (err != nil || strings.TrimLeft(o.port, "0123456789") != "" || port < 1 || port > 65535) {
 		usageError("invalid port: %s", o.port)
 	}
@@ -436,6 +451,45 @@ func main() {
 		detach(o, a, abs)
 	}
 	serve(o, a, abs, seconds)
+}
+
+// Share a server on this machine instead of a path
+func shareServer(o options) {
+	switch {
+	case o.as != "":
+		usageError("--as is for paths; a URL is passed on as it is")
+	case o.once:
+		usageError("--once is for files; it does not apply to a URL")
+	}
+	if port, err := strconv.Atoi(o.port); o.port != "" && (err != nil || strings.TrimLeft(o.port, "0123456789") != "" || port < 1 || port > 65535) {
+		usageError("invalid port: %s", o.port)
+	}
+	seconds, ok := parseTime(o.timeSpec)
+	if !ok {
+		usageError("invalid time: %s (use 90, 30s, 10m, 2h or 0)", o.timeSpec)
+	}
+	target, err := localTarget(o.path)
+	if err != nil {
+		die("%v", err)
+	}
+	proxy := adapter.Adapter{ID: "proxy", Usable: true}
+	if o.mode == "which" {
+		if o.json {
+			fmt.Println(jsonObject("adapter", "proxy", "id", "proxy", "dir", nil, "path", target.String()))
+		} else {
+			fmt.Printf("proxy\t(built in)\n")
+		}
+		exit(0)
+	}
+	if !answers(target) {
+		die("nothing answers at %s; start the app first", target.Redacted())
+	}
+	o.proxy = target
+	if o.detach {
+		detach(o, proxy, target.String())
+	}
+	serve(o, proxy, target.String(), seconds)
+	exit(0)
 }
 
 // Why a directory would hand out far more than meant: the root of a disk, or your home directory

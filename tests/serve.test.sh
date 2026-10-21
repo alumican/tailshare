@@ -150,6 +150,103 @@ test_adapter_of_your_own_that_fails() {
 	assert_clean
 }
 
+# MARK: - A server on this machine
+
+test_share_a_server() {
+	start_app
+	share "http://127.0.0.1:$APP_PORT"
+	assert_eq "$(json_get "$share" url)" "https://host.example.ts.net:10443/" "URL"
+	assert_eq "$(json_get "$share" adapter)" proxy "adapter"
+	assert_eq "$(json_get "$share" path)" "http://127.0.0.1:$APP_PORT" "path"
+	assert_fetch / 200
+	assert_contains "$(cat "$SANDBOX/body")" 'href="/api/hello"'
+	# The app sees itself addressed as its own host, and who asked
+	assert_fetch /api/hello 200 "Tailscale-User-Login: alice@example.com"
+	assert_eq "$(json_get "$(cat "$SANDBOX/body")" host)" "127.0.0.1:$APP_PORT" "the Host the app got"
+	assert_eq "$(json_get "$(cat "$SANDBOX/body")" login)" "alice@example.com" "the login the app got"
+	assert_fetch /missing 404
+	run "$TAILSHARE" --list
+	assert_contains "$out" "10443 proxy  until "
+	assert_contains "$out" "http://127.0.0.1:$APP_PORT"
+	stop_and_check
+}
+
+test_share_a_page_of_a_server() {
+	start_app
+	share "http://localhost:$APP_PORT/api/hello?x=1"
+	assert_eq "$(json_get "$share" url)" "https://host.example.ts.net:10443/api/hello?x=1" "URL"
+	assert_fetch / 200
+	stop_and_check
+}
+
+test_share_a_server_streams_both_ways() {
+	start_app
+	share "http://127.0.0.1:$APP_PORT"
+	python3 - "$(local_url "$port")" << 'EOF' || fail "upload or stream"
+import sys, time, urllib.request
+base = sys.argv[1]
+body = b"x" * (20 << 20)
+with urllib.request.urlopen(urllib.request.Request(base + "/upload", data=body, method="POST"), timeout=30) as response:
+    received = response.read().decode()
+    assert received == str(len(body)), f"the app received {received} bytes of {len(body)}"
+start = time.time()
+with urllib.request.urlopen(base + "/stream", timeout=10) as response:
+    first = response.readline()
+    elapsed = time.time() - start
+    assert first == b"data: first\n" and elapsed < 0.8, f"first event {first!r} after {elapsed:.2f}s"
+    assert b"data: second" in response.read()
+EOF
+	stop_and_check
+}
+
+test_share_a_server_with_secret() {
+	start_app
+	share --secret "http://127.0.0.1:$APP_PORT"
+	python3 - "$(local_url "$port")" "$(json_get "$share" url)" << 'EOF' || fail "with --secret"
+import sys, urllib.error, urllib.request
+base, url = sys.argv[1:3]
+token = url.split("/")[3]
+def get(path, cookie=None):
+    request = urllib.request.Request(base + path, headers={"Cookie": cookie} if cookie else {})
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, response.headers.get("Set-Cookie", "")
+    except urllib.error.HTTPError as error:
+        return error.code, ""
+# The cookie is Secure: a browser gets it over the HTTPS of tailscale serve; this test reaches
+# tailshare over plain HTTP, so it sends the cookie back by hand
+assert get("/api/hello")[0] == 404
+status, cookie = get("/" + token + "/")
+assert status == 200 and cookie.startswith(f"tailshare_10443={token};"), cookie
+assert "HttpOnly" in cookie and "Secure" in cookie and "SameSite=Lax" in cookie, cookie
+assert get("/api/hello", f"tailshare_10443={token}")[0] == 200
+assert get("/api/hello", "tailshare_10443=wrong")[0] == 404
+assert get("/api/hello", f"tailshare_11443={token}")[0] == 404
+EOF
+	stop_and_check
+}
+
+test_servers_that_are_refused() {
+	run "$TAILSHARE" -t 3s http://192.0.2.1:8765
+	assert_status 1
+	assert_contains "$err" "refusing to share http://192.0.2.1:8765: only servers on this machine"
+	run "$TAILSHARE" -t 3s https://127.0.0.1:8765
+	assert_status 1
+	assert_contains "$err" "only http:// servers can be shared"
+	run "$TAILSHARE" -t 3s http://127.0.0.1:1
+	assert_status 1
+	assert_contains "$err" "nothing answers at http://127.0.0.1:1; start the app first"
+	run "$TAILSHARE" --once http://127.0.0.1:1
+	assert_status 2
+	run "$TAILSHARE" --as file http://127.0.0.1:1
+	assert_status 2
+	run "$TAILSHARE" --which http://127.0.0.1:1
+	assert_status 0
+	assert_eq "$out" "proxy	(built in)" "--which"
+	assert_eq "$(cat "$FAKE_TAILSCALE_DIR/calls" 2> /dev/null)" "" "calls to tailscale"
+	assert_clean
+}
+
 # MARK: - Options
 
 test_json_and_time() {

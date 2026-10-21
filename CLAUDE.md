@@ -15,7 +15,7 @@ Usage and the adapter contract are in README.md. This file is for whoever change
 
 | | |
 |---|---|
-| `cmd/tailshare` | The command: arguments and help, serving and the request handler, `--detach`, `--list`, `--stop` |
+| `cmd/tailshare` | The command: arguments and help, serving and the request handler, sharing a server by its URL (`proxy.go`), `--detach`, `--list`, `--stop` |
 | `internal/adapter` | Finding adapters, the built-in ones, running a `prepare` of your own |
 | `internal/site`, `internal/plist`, `internal/qr` | What a share serves (`fs.FS`), Info.plist, QR codes |
 | `internal/tailscale`, `internal/state` | The tailscale CLI, records of running shares |
@@ -27,7 +27,8 @@ Usage and the adapter contract are in README.md. This file is for whoever change
 - **The macOS Tailscale app cannot serve paths** (`tailscale serve <path>` fails with a sandbox error), hence tailshare's own server on `127.0.0.1` behind `tailscale serve --https=<port> http://127.0.0.1:<port>`.
 - **tailscale serve runs in the foreground, as a child**, not with `--bg`: its config then lives under `Foreground` only as long as the child does, and does not survive a reboot. The child is in a process group of its own, so a Ctrl-C reaches tailshare alone, which stops the child and waits until the port is free. If the child dies, the share stops with an error. A share killed with `-9` leaves the child running; `--list` and `--stop` stop it (by its `serve_pid`) once they see the port still proxies to the share's own server. `cleanUpAfter` also turns off a `--bg` config left by tailshare 1.0.
 - **Identity comes from tailscale serve**: it sets `Tailscale-User-Login` on each request and removes any a client sends (`addTailscaleIdentityHeaders` in tailscale's `ipn/ipnlocal/serve.go`). Tagged devices get none. `--allow` relies on this.
-- With `--secret`, the token is stripped before the site is served, and the request log shows the path without it.
+- With `--secret`, the token is stripped before the site is served, and the request log shows the path without it. Opening the URL sets a cookie named after the port (cookies are per host, not per port), which lets the page's own absolute links through.
+- **Sharing a server by URL** goes through the same handler, with `httputil.ReverseProxy` in place of the file server. The recorder that logs requests must pass `Flush` and `Hijack` through (and `Unwrap`), or streamed responses stall and WebSocket breaks; `proxy_test.go` checks both. Only `http://` on loopback is accepted, and only when something answers there.
 - **tailscale serve can be busy.** When two clients change the serve config at once, one gets "Another client is changing the serve config; please try again." (tailscale/tailscale#18742). tailshare tries again, up to five times.
 - **The CLI is a contract.** Options, output, messages a script may match, and exit status stay as they are; the tests pin them. `--which` and `--adapters` show a built-in adapter's directory as `(built in)`, or `null` in JSON.
 - `--detach` re-runs the same binary with `--as <id>` and `TAILSHARE_LOG` set, in a session of its own, and waits for its first stdout line. The child records itself in the state directory. If it fails before serving, it leaves its log for the parent to show.
