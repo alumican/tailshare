@@ -6,7 +6,16 @@ set -uo pipefail
 
 TESTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$(dirname "$TESTS")"
-TAILSHARE="$ROOT/tailshare"
+
+# Build tailshare into a directory of its own; extra arguments go to go build (such as -ldflags).
+# tests/run builds once and passes it in TAILSHARE.
+build_tailshare() {
+	local dir="$1"
+	shift
+	mkdir -p "$dir"
+	(cd "$ROOT" && go build "$@" -o "$dir/tailshare" .) || return 1
+	echo "$dir/tailshare"
+}
 
 # MARK: - Sandbox
 
@@ -125,13 +134,13 @@ fetch() {
 
 # MARK: - Fixtures
 
-# An IPA with only an Info.plist, which is all the ipa adapter reads
+# An IPA with only an Info.plist (binary, as Xcode writes it), which is all the ipa adapter reads
 make_ipa() {
 	python3 - "$1" << 'EOF'
 import plistlib, sys, zipfile
 info = {"CFBundleIdentifier": "com.example.demo", "CFBundleDisplayName": "Demo & Co", "CFBundleShortVersionString": "1.2.3"}
 with zipfile.ZipFile(sys.argv[1], "w") as archive:
-    archive.writestr("Payload/Demo.app/Info.plist", plistlib.dumps(info))
+    archive.writestr("Payload/Demo.app/Info.plist", plistlib.dumps(info, fmt=plistlib.FMT_BINARY))
     archive.writestr("Payload/Demo.app/Demo", b"binary")
 EOF
 }
@@ -190,7 +199,12 @@ assert_clean() {
 # TEST_FILTER keeps only the tests whose name contains it.
 run_tests() {
 	local file="$0" name result passed=0 failed=0 skipped=0 log
-	log="$(mktemp "${TMPDIR:-/tmp}/tailshare-test-log.XXXXXX")"
+	BUILD="$(mktemp -d "${TMPDIR:-/tmp}/tailshare-test-build.XXXXXX")"
+	BUILD="$(cd "$BUILD" && pwd -P)"
+	if [[ -z "${TAILSHARE:-}" ]]; then
+		TAILSHARE="$(build_tailshare "$BUILD")" || { echo "FAIL    go build"; rm -rf "$BUILD"; return 1; }
+	fi
+	log="$BUILD/log"
 	for name in $(grep -oE '^test_[A-Za-z0-9_]+' "$file"); do
 		[[ -z "${TEST_FILTER:-}" || "$name" == *"$TEST_FILTER"* ]] || continue
 		(
@@ -205,7 +219,7 @@ run_tests() {
 			*) failed=$((failed + 1)); echo "FAIL    $name"; sed 's/^/        /' "$log" ;;
 		esac
 	done
-	rm -f "$log"
+	rm -rf "$BUILD"
 	echo "# $(basename "$file"): $passed passed, $failed failed, $skipped skipped"
 	((failed == 0))
 }

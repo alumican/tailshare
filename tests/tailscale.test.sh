@@ -3,14 +3,14 @@
 # Uses the fake tailscale only.
 source "$(dirname "$0")/lib.sh"
 
-# A copy of tailshare that looks for the Tailscale app in the sandbox instead of /Applications,
+# A build of tailshare that looks for the Tailscale app in the sandbox instead of /Applications,
 # run with a PATH that has no tailscale on it
 without_tailscale_on_path() {
 	rm "$SANDBOX/bin/tailscale"
 	PATH="$SANDBOX/bin:/usr/bin:/bin" command -v tailscale > /dev/null && skip "tailscale is in /usr/bin or /bin"
-	sed "s|/Applications/Tailscale.app|$SANDBOX/Applications/Tailscale.app|g" "$TAILSHARE" > "$SANDBOX/bin/tailshare"
-	chmod +x "$SANDBOX/bin/tailshare"
-	export TAILSHARE_ADAPTER_PATH="$ROOT/adapters"
+	build_tailshare "$SANDBOX/bin" \
+		-ldflags "-X github.com/alumican/tailshare/internal/tailscale.MacApp=$SANDBOX/Applications/Tailscale.app/Contents/MacOS/Tailscale" \
+		> /dev/null || fail "go build"
 	export PATH="$SANDBOX/bin:/usr/bin:/bin"
 }
 
@@ -24,6 +24,7 @@ test_tailscale_not_installed() {
 }
 
 test_tailscale_app_when_not_on_path() {
+	[[ "$(uname)" == Darwin ]] || skip "the Tailscale app is looked for on macOS only"
 	echo hi > "$FILES/a.txt"
 	without_tailscale_on_path
 	mkdir -p "$SANDBOX/Applications/Tailscale.app/Contents/MacOS"
@@ -91,10 +92,18 @@ test_serve_failure_leaves_nothing() {
 	assert_status 1
 	assert_eq "$out" "" "stdout"
 	assert_contains "$err" "tailscale serve failed"
+	assert_contains "$err" "serve: HTTPS is not enabled"
 	assert_clean
-	# The local server was started before tailscale serve; it is stopped too
-	pgrep -f "http.server .* --directory $TMPDIR/" > /dev/null && fail "the local server is still running"
-	return 0
+}
+
+test_serve_denied_says_how_to_allow_it() {
+	echo hi > "$FILES/a.txt"
+	export FAKE_TAILSCALE_SERVE=denied
+	run "$TAILSHARE" -t 3s "$FILES/a.txt"
+	assert_status 1
+	assert_contains "$err" "tailscale serve failed: Access denied: serve config denied"
+	assert_contains "$err" "sudo tailscale set --operator=\$USER"
+	assert_clean
 }
 
 test_port_in_use_is_refused() {

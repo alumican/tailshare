@@ -4,7 +4,8 @@
 #   FAKE_TAILSCALE_DIR     where it keeps its serve config (serve/<port> holds the target) and its call log
 #   FAKE_TAILSCALE_STATE   what `status` reports: Running (default), Stopped, NeedsLogin, ...,
 #                          or "down" for a daemon that does not answer
-#   FAKE_TAILSCALE_SERVE   "fail" makes `serve --bg` fail
+#   FAKE_TAILSCALE_SERVE   "fail" makes `serve --bg` fail; "denied" fails it as Linux does for a user
+#                          who is not the operator
 set -euo pipefail
 
 dir="${FAKE_TAILSCALE_DIR:?FAKE_TAILSCALE_DIR is not set}"
@@ -22,19 +23,23 @@ case "$*" in
 		printf '{"BackendState": "%s", "Self": {"DNSName": "host.example.ts.net.", "Online": true}}\n' "$state"
 		;;
 	"serve status --json")
-		tcp=""
+		# As the real one says it: the ports in TCP, and where each one's / is proxied to in Web
+		tcp="" web=""
 		for file in "$dir/serve"/*; do
 			[[ -f "$file" ]] || continue
-			tcp+="${tcp:+, }\"$(basename "$file")\": {\"HTTPS\": true}"
+			port="$(basename "$file")"
+			tcp+="${tcp:+, }\"$port\": {\"HTTPS\": true}"
+			web+="${web:+, }\"host.example.ts.net:$port\": {\"Handlers\": {\"/\": {\"Proxy\": \"$(cat "$file")\"}}}"
 		done
 		if [[ -n "$tcp" ]]; then
-			echo "{\"TCP\": {$tcp}}"
+			echo "{\"TCP\": {$tcp}, \"Web\": {$web}}"
 		else
 			echo "{}"
 		fi
 		;;
 	"serve --bg --https="*)
 		[[ "${FAKE_TAILSCALE_SERVE:-}" != fail ]] || { echo "serve: HTTPS is not enabled" >&2; exit 1; }
+		[[ "${FAKE_TAILSCALE_SERVE:-}" != denied ]] || { echo "Access denied: serve config denied" >&2; exit 1; }
 		port="${3#--https=}"
 		echo "$4" > "$dir/serve/$port"
 		;;

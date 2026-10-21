@@ -96,6 +96,58 @@ test_adapter_failure_serves_nothing() {
 	assert_eq "$(grep -c -- '--bg' "$FAKE_TAILSCALE_DIR/calls")" 0 "calls to tailscale serve --bg"
 }
 
+test_adapter_of_your_own() {
+	local own="$XDG_CONFIG_HOME/tailshare/adapters/30-apk"
+	mkdir -p "$own"
+	printf '# Install page for an Android app\n*.apk\n' > "$own/match"
+	echo '<a href="%s">Install</a>' > "$own/page.html"
+	cat > "$own/prepare" << 'EOF'
+#!/bin/bash
+# The contract: prepare <path> <site> <base-url>, TAILSHARE_ADAPTER_DIR, the path to open on the last line
+set -euo pipefail
+input="$1" site="$2" base="$3"
+ln -s "$input" "$site/$(basename "$input")"
+printf "$(cat "$TAILSHARE_ADAPTER_DIR/page.html")\n" "$base/$(basename "$input")" > "$site/index.html"
+echo "said on stderr" >&2
+echo "something else first"
+echo "/"
+EOF
+	chmod +x "$own/prepare"
+	echo "apk" > "$FILES/My App.apk"
+
+	run "$TAILSHARE" -d -j "$FILES/My App.apk"
+	assert_status 0
+	share="$out" port="$(json_get "$out" port)"
+	STARTED="$STARTED $(json_get "$share" pid)"
+	assert_eq "$(json_get "$share" adapter)" apk "adapter"
+	assert_eq "$(json_get "$share" url)" "https://host.example.ts.net:10443/" "URL"
+	assert_fetch / 200
+	assert_eq "$(cat "$SANDBOX/body")" '<a href="https://host.example.ts.net:10443/My App.apk">Install</a>' "index.html"
+	assert_fetch "/My%20App.apk" 200
+	assert_eq "$(cat "$SANDBOX/body")" "apk" "the APK, through the link"
+	stop_and_check
+}
+
+test_adapter_of_your_own_that_fails() {
+	local own="$XDG_CONFIG_HOME/tailshare/adapters/30-broken"
+	mkdir -p "$own"
+	echo "*.txt" > "$own/match"
+	printf '#!/bin/bash\necho "cannot do this" >&2\nexit 3\n' > "$own/prepare"
+	chmod +x "$own/prepare"
+	echo hi > "$FILES/a.txt"
+	run "$TAILSHARE" -t 3s "$FILES/a.txt"
+	assert_status 1
+	assert_contains "$err" "cannot do this"
+	assert_contains "$err" "adapter broken failed for $FILES/a.txt"
+	assert_clean
+
+	printf '#!/bin/bash\necho "not a path"\n' > "$own/prepare"
+	run "$TAILSHARE" -t 3s "$FILES/a.txt"
+	assert_status 1
+	assert_contains "$err" "adapter broken printed no path to open (got: not a path)"
+	assert_clean
+}
+
 # MARK: - Options
 
 test_json_and_time() {
@@ -202,16 +254,32 @@ test_stop_all() {
 	assert_clean
 }
 
-test_record_of_a_killed_share_is_dropped() {
+test_a_killed_share_is_cleaned_up_after() {
+	echo hi > "$FILES/a.txt"
+	share "$FILES/a.txt"
+	local pid server
+	pid="$(json_get "$share" pid)"
+	server="$(local_url "$port")"
+	kill -KILL "$pid"
+	wait_until 5 gone "$pid"
+	assert_eq "$(http_get "$server/")" 000 "the local server of a killed share"
+	# It could not clean up after itself; --list finds it gone and does
+	run "$TAILSHARE" --list --json
+	assert_status 0
+	assert_eq "$out" "" "running shares"
+	assert_clean
+}
+
+test_a_killed_share_leaves_a_port_taken_since_alone() {
 	echo hi > "$FILES/a.txt"
 	share "$FILES/a.txt"
 	kill -KILL "$(json_get "$share" pid)"
 	wait_until 5 gone "$(json_get "$share" pid)"
-	run "$TAILSHARE" --list --json
-	assert_eq "$out" "" "running shares"
-	[[ -e "$TAILSHARE_STATE_DIR/$port" ]] && fail "the record of the killed share is still there"
-	# The killed share could not clean up after itself: its log, serve config and local server stay
-	pkill -f "http.server .* --directory $TMPDIR/" || true
+	# Something else took the port since
+	echo "http://127.0.0.1:1" > "$FAKE_TAILSCALE_DIR/serve/$port"
+	run "$TAILSHARE" --list
+	assert_eq "$(cat "$FAKE_TAILSCALE_DIR/serve/$port")" "http://127.0.0.1:1" "the other service's config"
+	assert_empty_dir "$TAILSHARE_STATE_DIR"
 }
 
 # MARK: - Every way of stopping leaves nothing behind
@@ -249,7 +317,7 @@ test_ctrl_c() {
 	status=$?
 	out="$(cat "$SANDBOX/fg.out")" err="$(cat "$SANDBOX/fg.err")"
 	assert_status 0
-	assert_contains "$err" "GET /a.txt"
+	assert_contains "$err" "GET /a.txt 200"
 	assert_eq "$(http_get "$server/")" 000 "the local server after Ctrl-C"
 	assert_clean
 }

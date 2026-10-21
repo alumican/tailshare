@@ -59,26 +59,27 @@ Short options without values can be combined: `-dqj`.
 - Find what is running with `--list --json`, and stop it with `--stop <port>`. Shares also stop by themselves after `--time` (one hour by default), so a forgotten one does not stay up.
 - Use `--which --json <path>` to check what would be served before serving it.
 
-## Bundled adapters
+## Built-in adapters
 
 | Adapter | Matches | Serves |
 |---|---|---|
-| `ipa` | `*.ipa` | An install page for iPhone, with its manifest and the IPA. The title and version come from the IPA's Info.plist; the page and the manifest are made from the templates `index.html` and `manifest.plist`. |
+| `ipa` | `*.ipa` | An install page for iPhone, with its manifest and the IPA. The title and version come from the IPA's Info.plist. |
 | `html` | `*.html` `*.htm` | The page and the local files it refers to, and nothing else: `src`, `href`, `srcset`, `poster`, `url()` and `@import` in styles, following on into style sheets. Other files in the directory, and anything outside it, are not served. |
 | `dir` | a directory | The directory at `/`, so a built site finds its files where it expects them: its `index.html`, or a listing. Hidden entries at the top (`.git`, `.env`, …) are left out. |
 | `file` | anything else | That one file, at `/<its name>`. |
 
 - iOS installs only IPAs signed for development or ad hoc, on devices registered for them.
 - The `html` adapter cannot see files a script loads by itself (`fetch`, …). Serve the directory for such pages.
+- Nothing is copied: files are read from where they are when they are requested.
 
 ## Adding an adapter
 
-An adapter is a directory with two files. Put it in place and it is used from the next run; there is nothing to register.
+An adapter of your own is a directory with two files. Put it in place and it is used from the next run; there is nothing to register.
 
 ```
 30-apk/
 ├── match     # what it serves: the first comment describes it, then patterns
-└── prepare   # an executable script, in any language; templates and other files may sit beside it
+└── prepare   # an executable, in any language; templates and other files may sit beside it
 ```
 
 ```
@@ -87,10 +88,10 @@ An adapter is a directory with two files. Put it in place and it is used from th
 *.apk
 ```
 
-- **Where:** `~/.config/tailshare/adapters/` for your own, and `adapters/` next to `tailshare` for the bundled ones. Your own wins for the same name. Set `TAILSHARE_ADAPTER_PATH` (separated by `:`) to look elsewhere.
-- **Order:** adapters are tried by name, and the first whose patterns match is used, so the leading number sets the priority. `--as` takes the name without the number (`ipa`) or the whole name (`10-ipa`).
+- **Where:** `~/.config/tailshare/adapters/` (`%AppData%\tailshare\adapters` on Windows). Set `TAILSHARE_ADAPTER_PATH` (separated by `:`, or `;` on Windows) to look elsewhere; the first one found for a name wins.
+- **Order:** your adapters and the built-in ones are tried together by name, and the first whose patterns match is used, so the leading number sets the priority. One of yours with the name of a built-in one (`99-file`) replaces it. `--as` takes the name without the number (`ipa`) or the whole name (`10-ipa`).
 - **Patterns:** shell globs on the name of the path, case-insensitive, separated by spaces or lines; `#` starts a comment. Globs never match a directory; `@dir` matches any directory.
-- An adapter whose `prepare` is not executable is skipped with a warning, and marked in `--adapters`.
+- An adapter whose `prepare` is not executable is skipped with a warning, and marked in `--adapters`. On Windows, `prepare.exe`, `prepare.cmd` or `prepare.bat`.
 
 ### The `prepare` contract
 
@@ -107,7 +108,7 @@ prepare <path> <site> <base-url>
 | stdout | The last line is the path to open, such as `/` or `/report.html`. tailshare URL-encodes it. |
 | exit status | Anything but 0 stops tailshare without serving; say why on stderr. |
 
-The whole of `99-file/prepare`:
+A `prepare` that serves one file, as the built-in `file` adapter does:
 
 ```bash
 #!/bin/bash
@@ -120,12 +121,12 @@ echo "/$name"
 
 ## How it works
 
-1. The adapter fills a temporary directory with what to serve.
-2. `python3 -m http.server` serves it on a free port of `127.0.0.1`.
+1. The adapter decides what to serve. An adapter of your own fills a temporary directory.
+2. tailshare serves it itself, on a free port of `127.0.0.1`.
 3. `tailscale serve --bg --https=<port>` exposes that port to the tailnet.
 4. When the time is up, on Ctrl-C, or on `--stop`, tailshare runs `tailscale serve --https=<port> off`, stops the server, and removes the temporary directory and its record.
 
-Running shares are recorded in `~/.local/state/tailshare/<port>` (or `$TAILSHARE_STATE_DIR`), which is how `--list` and `--stop` find them. Records of shares that are gone are dropped.
+Running shares are recorded in `~/.local/state/tailshare/<port>` (or `$TAILSHARE_STATE_DIR`), which is how `--list` and `--stop` find them. A share that is gone without cleaning up after itself (killed with `-9`, a crash) is cleaned up the next time they look: its record, log and temporary directory are removed, and its port is turned off if it still points at the share's own server.
 
 The local server is needed because the macOS Tailscale app cannot serve files itself: `tailscale serve <path>` is blocked by its sandbox.
 
@@ -134,25 +135,46 @@ The local server is needed because the macOS Tailscale app cannot serve files it
 | Platform | Runs tailshare | Opens the URL | Installs an app from it |
 |---|:-:|:-:|:-:|
 | macOS | ✅ | ✅ | — |
-| Linux | ❌ ¹ | ✅ | — |
-| Windows | ❌ ² | ✅ | — |
+| Linux | ⚠️ ¹ | ✅ | — |
+| Windows | ⚠️ ² | ✅ | — |
 | iOS, iPadOS | ❌ | ✅ | ✅ ³ |
 | Android | ❌ | ✅ | ❌ ⁴ |
 
+✅ works and is tested · ⚠️ builds, but has not been tried there · ❌ does not
+
 - **Runs tailshare:** the machine whose files are served. **Opens the URL:** any device on the tailnet with Tailscale connected, in any browser. The certificate is a real one for the device's `ts.net` name, so there is no warning.
-- ¹ Not yet: `date -r` is the BSD form, so with GNU date the default `--time` fails (only `--time 0` gets through), and `tailscale serve` needs root, or `sudo tailscale set --operator=$USER` once. Untested.
-- ² tailshare is a bash script. Under WSL it would be Linux, untested.
+- ¹ `tailscale serve` needs root, or `sudo tailscale set --operator=$USER` once; tailshare says so when it is refused.
+- ² `--stop` cannot ask a share to stop on Windows, so it ends it and cleans up for it. Adapters of your own need a way to make links in `<site>` (Developer Mode), or must copy.
 - ³ The `ipa` adapter's install page, in Safari.
-- ⁴ No bundled adapter: an APK is served by `file` as a download. See [Adding an adapter](#adding-an-adapter).
+- ⁴ No built-in adapter: an APK is served by `file` as a download. See [Adding an adapter](#adding-an-adapter).
 
 ## Requirements
 
-- `tailscale`, with HTTPS certificates enabled on the tailnet. If it is not on `PATH`, the one in `/Applications/Tailscale.app` is used.
-- `python3`, standard library only (tested with 3.9).
-- bash (works with 3.2, the one macOS ships).
+- `tailscale`, with HTTPS certificates enabled on the tailnet. If it is not on `PATH`, the one in `/Applications/Tailscale.app` (macOS) or `C:\Program Files\Tailscale` (Windows) is used.
+- Nothing else at run time: tailshare is a single binary.
+- To build it: Go 1.22 or later. It uses the standard library only.
 
 ## Install
 
 ```sh
-ln -s ~/workspace/tools/tailshare/tailshare ~/.local/bin/tailshare
+go install github.com/alumican/tailshare@latest     # into $(go env GOPATH)/bin
 ```
+
+Or from a clone, building the binary in place and linking it onto your `PATH`:
+
+```sh
+git clone https://github.com/alumican/tailshare && cd tailshare
+go build
+ln -s "$PWD/tailshare" ~/.local/bin/tailshare
+```
+
+After `git pull`, run `go build` again.
+
+## Development
+
+```sh
+tests/run          # go vet, go test, a build for each platform, and the command line tests
+tests/run --live   # also serve over the tailnet with the real tailscale
+```
+
+See `CLAUDE.md` for the principles and how the tests work.

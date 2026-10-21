@@ -1,15 +1,7 @@
 #!/bin/bash
-# Adapters: which one is chosen, and what each bundled one puts in the site. Nothing is served.
+# Adapters: --adapters, --which and --as, and adapters of your own. Nothing is served.
+# What the built-in adapters serve is tested in Go (internal/adapter), and over HTTP in serve.test.sh.
 source "$(dirname "$0")/lib.sh"
-
-# Run a bundled adapter's prepare on a path, into $SANDBOX/site
-prepare() {
-	local adapter="$1" input="$2"
-	rm -rf "$SANDBOX/site"
-	mkdir "$SANDBOX/site"
-	run env TAILSHARE_ADAPTER_DIR="$ROOT/adapters/$adapter" "$ROOT/adapters/$adapter/prepare" \
-		"$input" "$SANDBOX/site" "https://host.example.ts.net:10443"
-}
 
 which_adapter() {
 	run "$TAILSHARE" --which "$1"
@@ -44,6 +36,9 @@ test_which_json() {
 	assert_eq "$(json_get "$out" adapter)" html "adapter"
 	assert_eq "$(json_get "$out" id)" 50-html "id"
 	assert_eq "$(json_get "$out" path)" "$FILES/report.html" "path"
+	assert_eq "$(json_get "$out" dir)" null "dir of a built-in adapter"
+	run "$TAILSHARE" --which "$FILES/report.html"
+	assert_eq "$out" "html	(built in)" "plain"
 }
 
 test_as_overrides_the_match() {
@@ -77,13 +72,21 @@ test_own_adapters_win_and_join_the_order() {
 }
 
 test_adapter_path_from_the_environment() {
-	mkdir -p "$SANDBOX/elsewhere/50-any"
-	printf '# Anything\n*\n' > "$SANDBOX/elsewhere/50-any/match"
-	printf '#!/bin/bash\necho /\n' > "$SANDBOX/elsewhere/50-any/prepare"
-	chmod +x "$SANDBOX/elsewhere/50-any/prepare"
-	touch "$FILES/App.ipa"
-	export TAILSHARE_ADAPTER_PATH="$SANDBOX/elsewhere"
-	assert_eq "$(which_adapter "$FILES/App.ipa")" any "the only adapter on the path"
+	local adapter
+	for adapter in "$SANDBOX/first/50-any" "$SANDBOX/second/50-any" "$SANDBOX/second/60-more"; do
+		mkdir -p "$adapter"
+		printf '# Anything\n*\n' > "$adapter/match"
+		printf '#!/bin/bash\necho /\n' > "$adapter/prepare"
+		chmod +x "$adapter/prepare"
+	done
+	touch "$FILES/App.ipa" "$FILES/notes.txt"
+	export TAILSHARE_ADAPTER_PATH="$SANDBOX/first:$SANDBOX/missing:$SANDBOX/second"
+	run "$TAILSHARE" --which "$FILES/notes.txt"
+	assert_eq "$out" "any	$SANDBOX/first/50-any" "the first on the path wins"
+	run "$TAILSHARE" --as more --which "$FILES/notes.txt"
+	assert_eq "$out" "more	$SANDBOX/second/60-more" "an adapter further along the path"
+	# The built-in ones are still there, in their place in the order
+	assert_eq "$(which_adapter "$FILES/App.ipa")" ipa "App.ipa"
 }
 
 test_adapter_without_executable_prepare_is_skipped() {
@@ -100,102 +103,6 @@ test_adapter_without_executable_prepare_is_skipped() {
 	run "$TAILSHARE" --adapters --json
 	assert_contains "$out" '"id": "20-text"'
 	assert_contains "$(grep 20-text <<< "$out")" '"usable": false'
-}
-
-# MARK: - What each puts in the site
-
-test_file_prepare() {
-	echo hi > "$FILES/my notes.txt"
-	prepare 99-file "$FILES/my notes.txt"
-	assert_status 0
-	assert_eq "$out" "/my notes.txt" "path to open"
-	assert_eq "$(tree "$SANDBOX/site")" "my notes.txt" "site"
-	assert_eq "$(readlink "$SANDBOX/site/my notes.txt")" "$FILES/my notes.txt" "link"
-}
-
-test_dir_prepare_leaves_out_hidden_entries() {
-	mkdir -p "$FILES/dist/assets" "$FILES/dist/.git"
-	touch "$FILES/dist/index.html" "$FILES/dist/assets/app.js" "$FILES/dist/.env" "$FILES/dist/.git/config"
-	prepare 80-dir "$FILES/dist"
-	assert_status 0
-	assert_eq "$out" "/" "path to open"
-	assert_eq "$(tree "$SANDBOX/site")" "assets
-index.html" "site"
-}
-
-test_dir_prepare_empty_directory() {
-	mkdir "$FILES/empty"
-	prepare 80-dir "$FILES/empty"
-	assert_status 0
-	assert_eq "$(tree "$SANDBOX/site")" "" "site"
-}
-
-test_html_prepare_follows_references_and_nothing_else() {
-	local page="$FILES/site"
-	mkdir -p "$page/css" "$page/img" "$page/js"
-	cat > "$page/page.html" << 'EOF'
-<!doctype html>
-<link rel="stylesheet" href="css/style.css">
-<style>@import "css/extra.css"; .hero { background: url('img/hero.png') }</style>
-<img src="img/a%20b.png" srcset="img/1x.png 1x, img/2x.png 2x">
-<video poster="img/poster.png"></video>
-<div style="background-image: url(img/inline.png)"></div>
-<script src="/js/app.js"></script>
-<a href="https://example.com/">elsewhere</a>
-<a href="#top">anchor</a>
-<img src="../outside.png">
-<img src="img/missing.png">
-EOF
-	printf '@import "base.css";\nbody { background: url(../img/bg.png) }\n' > "$page/css/style.css"
-	echo "p { color: red }" > "$page/css/base.css"
-	echo "" > "$page/css/extra.css"
-	touch "$page/img/hero.png" "$page/img/a b.png" "$page/img/1x.png" "$page/img/2x.png" "$page/img/poster.png" \
-		"$page/img/inline.png" "$page/img/bg.png" "$page/js/app.js" "$page/secret.txt" "$FILES/outside.png"
-
-	prepare 50-html "$page/page.html"
-	assert_status 0
-	assert_eq "$out" "/page.html" "path to open"
-	assert_eq "$(tree "$SANDBOX/site")" "css/base.css
-css/extra.css
-css/style.css
-img/1x.png
-img/2x.png
-img/a b.png
-img/bg.png
-img/hero.png
-img/inline.png
-img/poster.png
-js/app.js
-page.html" "site"
-}
-
-test_ipa_prepare_makes_install_page_and_manifest() {
-	make_ipa "$FILES/Demo App.ipa"
-	prepare 10-ipa "$FILES/Demo App.ipa"
-	assert_status 0
-	assert_eq "$out" "/" "path to open"
-	assert_eq "$(tree "$SANDBOX/site")" "Demo App.ipa
-index.html
-manifest.plist" "site"
-
-	local manifest page
-	manifest="$(cat "$SANDBOX/site/manifest.plist")"
-	assert_contains "$manifest" "<string>https://host.example.ts.net:10443/Demo%20App.ipa?v="
-	assert_contains "$manifest" "<string>com.example.demo</string>"
-	assert_contains "$manifest" "<string>1.2.3</string>"
-	assert_contains "$manifest" "<string>Demo &amp; Co</string>"
-	python3 -c 'import plistlib, sys; plistlib.load(open(sys.argv[1], "rb"))' "$SANDBOX/site/manifest.plist" \
-		|| fail "manifest.plist is not a valid plist"
-	page="$(cat "$SANDBOX/site/index.html")"
-	assert_contains "$page" "itms-services://?action=download-manifest&amp;url=https://host.example.ts.net:10443/manifest.plist"
-	assert_contains "$page" "Demo &amp; Co"
-}
-
-test_ipa_prepare_refuses_what_is_not_an_ipa() {
-	echo "not a zip" > "$FILES/Broken.ipa"
-	prepare 10-ipa "$FILES/Broken.ipa"
-	assert_status 1
-	assert_contains "$err" "not an iOS app archive"
 }
 
 run_tests

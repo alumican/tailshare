@@ -1,7 +1,0 @@
-#!/bin/bash
-# Serve one file at /<its name>.
-set -euo pipefail
-input="$1" site="$2"
-name="$(basename "$input")"
-ln -s "$input" "$site/$name"
-echo "/$name"
