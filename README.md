@@ -129,6 +129,22 @@ Running shares are recorded in `~/.local/state/tailshare/<port>` (or `$TAILSHARE
 
 The local server is needed because the macOS Tailscale app cannot serve files itself: `tailscale serve <path>` is blocked by its sandbox.
 
+## Platforms
+
+| Platform | Runs tailshare | Opens the URL | Installs an app from it |
+|---|:-:|:-:|:-:|
+| macOS | ✅ | ✅ | — |
+| Linux | ❌ ¹ | ✅ | — |
+| Windows | ❌ ² | ✅ | — |
+| iOS, iPadOS | ❌ | ✅ | ✅ ³ |
+| Android | ❌ | ✅ | ❌ ⁴ |
+
+- **Runs tailshare:** the machine whose files are served. **Opens the URL:** any device on the tailnet with Tailscale connected, in any browser. The certificate is a real one for the device's `ts.net` name, so there is no warning.
+- ¹ Not yet: `date -r` is the BSD form, so with GNU date the default `--time` fails (only `--time 0` gets through), and `tailscale serve` needs root, or `sudo tailscale set --operator=$USER` once. Untested.
+- ² tailshare is a bash script. Under WSL it would be Linux, untested.
+- ³ The `ipa` adapter's install page, in Safari.
+- ⁴ No bundled adapter: an APK is served by `file` as a download. See [Adding an adapter](#adding-an-adapter).
+
 ## Requirements
 
 - `tailscale`, with HTTPS certificates enabled on the tailnet. If it is not on `PATH`, the one in `/Applications/Tailscale.app` is used.
