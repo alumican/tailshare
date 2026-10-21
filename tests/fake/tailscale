@@ -6,6 +6,9 @@
 #                          or "down" for a daemon that does not answer
 #   FAKE_TAILSCALE_SERVE   "fail" makes `serve --bg` fail; "denied" fails it as Linux does for a user
 #                          who is not the operator
+#   FAKE_TAILSCALE_FOREGROUND  ports that another `tailscale serve` holds in the foreground
+#   FAKE_TAILSCALE_BUSY    how many times `serve --bg` fails first because another client is changing
+#                          the serve config; FAKE_TAILSCALE_BUSY_OFF the same for `serve ... off`
 set -euo pipefail
 
 dir="${FAKE_TAILSCALE_DIR:?FAKE_TAILSCALE_DIR is not set}"
@@ -17,6 +20,17 @@ if [[ "$state" == down ]]; then
 	echo "failed to connect to local Tailscale service; is Tailscale running?" >&2
 	exit 1
 fi
+
+# Fail as tailscale does when another client changed the serve config, the first $1 times
+busy() {
+	local count=0
+	[[ -f "$dir/busy-$2" ]] && count="$(cat "$dir/busy-$2")"
+	if ((count < $1)); then
+		echo $((count + 1)) > "$dir/busy-$2"
+		echo "Another client is changing the serve config; please try again." >&2
+		exit 1
+	fi
+}
 
 case "$*" in
 	"status --json")
@@ -31,19 +45,25 @@ case "$*" in
 			tcp+="${tcp:+, }\"$port\": {\"HTTPS\": true}"
 			web+="${web:+, }\"host.example.ts.net:$port\": {\"Handlers\": {\"/\": {\"Proxy\": \"$(cat "$file")\"}}}"
 		done
-		if [[ -n "$tcp" ]]; then
-			echo "{\"TCP\": {$tcp}, \"Web\": {$web}}"
-		else
-			echo "{}"
-		fi
+		# Another tailscale serve in the foreground keeps its config apart, under its session
+		foreground=""
+		for port in ${FAKE_TAILSCALE_FOREGROUND:-}; do
+			foreground+="${foreground:+, }\"$port\": {\"HTTPS\": true}"
+		done
+		json=""
+		[[ -n "$tcp" ]] && json+="\"TCP\": {$tcp}, \"Web\": {$web}"
+		[[ -n "$foreground" ]] && json+="${json:+, }\"Foreground\": {\"session-1\": {\"TCP\": {$foreground}}}"
+		echo "{$json}"
 		;;
 	"serve --bg --https="*)
+		busy "${FAKE_TAILSCALE_BUSY:-0}" bg
 		[[ "${FAKE_TAILSCALE_SERVE:-}" != fail ]] || { echo "serve: HTTPS is not enabled" >&2; exit 1; }
 		[[ "${FAKE_TAILSCALE_SERVE:-}" != denied ]] || { echo "Access denied: serve config denied" >&2; exit 1; }
 		port="${3#--https=}"
 		echo "$4" > "$dir/serve/$port"
 		;;
 	"serve --https="*" off")
+		busy "${FAKE_TAILSCALE_BUSY_OFF:-0}" off
 		port="${2#--https=}"
 		rm -f "$dir/serve/$port"
 		;;

@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Where the CLI is looked for when tailscale is not on PATH: the macOS app, and the Windows installer.
@@ -57,12 +58,14 @@ func (c CLI) Status() Status {
 	return Status{State: status.BackendState, Host: strings.TrimSuffix(status.Self.DNSName, ".")}
 }
 
-// ServeConfig is what tailscale serve does now.
+// ServeConfig is what tailscale serve does now: what runs in the background (TCP, Web), and what
+// each tailscale serve running in the foreground does (Foreground, one config per session).
 type ServeConfig struct {
 	TCP map[string]json.RawMessage
 	Web map[string]struct {
 		Handlers map[string]struct{ Proxy string }
 	}
+	Foreground map[string]ServeConfig
 }
 
 func (c CLI) ServeConfig() (ServeConfig, error) {
@@ -80,10 +83,17 @@ func (c CLI) ServeConfig() (ServeConfig, error) {
 	return config, nil
 }
 
-// Uses tells whether tailscale serve uses the port, for anything.
+// Uses tells whether tailscale serve uses the port, for anything, in the background or in the foreground.
 func (s ServeConfig) Uses(port int) bool {
-	_, ok := s.TCP[strconv.Itoa(port)]
-	return ok
+	if _, ok := s.TCP[strconv.Itoa(port)]; ok {
+		return true
+	}
+	for _, foreground := range s.Foreground {
+		if foreground.Uses(port) {
+			return true
+		}
+	}
+	return false
 }
 
 // Proxy is where the port's / is proxied to, or "" when it is not.
@@ -99,16 +109,30 @@ func (s ServeConfig) Proxy(port int) string {
 // Serve exposes target (http://127.0.0.1:<port>) on the tailnet, over HTTPS on port, until ServeOff.
 // The error carries what tailscale said.
 func (c CLI) Serve(port int, target string) error {
-	out, err := exec.Command(c.Path, "serve", "--bg", "--https="+strconv.Itoa(port), target).CombinedOutput()
-	if err != nil {
+	return c.serve("--bg", "--https="+strconv.Itoa(port), target)
+}
+
+func (c CLI) ServeOff(port int) error {
+	return c.serve("--https="+strconv.Itoa(port), "off")
+}
+
+// What tailscale serve says when another client changed the serve config at the same moment
+// (such as another share starting); the change is safe to try again
+const busy = "Another client is changing the serve config"
+
+func (c CLI) serve(args ...string) error {
+	for attempt := 1; ; attempt++ {
+		out, err := exec.Command(c.Path, append([]string{"serve"}, args...)...).CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		if strings.Contains(string(out), busy) && attempt < 5 {
+			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+			continue
+		}
 		if message := strings.TrimSpace(string(out)); message != "" {
 			return errors.New(message)
 		}
 		return err
 	}
-	return nil
-}
-
-func (c CLI) ServeOff(port int) error {
-	return exec.Command(c.Path, "serve", "--https="+strconv.Itoa(port), "off").Run()
 }

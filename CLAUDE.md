@@ -8,7 +8,7 @@ Usage and the adapter contract are in README.md. This file is for whoever change
 - Unix style: stdout carries only the result (URL, listing, JSON); messages and the request log go to stderr. Exit status 0 / 1 (error) / 2 (usage).
 - Usable by people and by AI agents alike: `--help` is complete, `--json` and `--detach` exist for scripts.
 - Leave nothing behind: every way of stopping (time up, Ctrl-C, TERM, `--stop`) removes the `tailscale serve` config, the local server, the temporary directory and the state file. A share killed with `-9` is cleaned up by the next `--list` or `--stop`.
-- Never touch a `tailscale serve` port that something else uses. Check `tailscale serve status` before choosing one; other long-running services may hold ports in the 10443+ range. A dead share's port is turned off only if it still proxies to that share's own local server.
+- Never touch a `tailscale serve` port that something else uses. Check `tailscale serve status` before choosing one, including the ports a `tailscale serve` running in the foreground holds (under `Foreground`); other long-running services may hold ports in the 10443+ range. A dead share's port is turned off only if it still proxies to that share's own local server.
 - English for code, comments and docs.
 
 ## Layout
@@ -27,6 +27,7 @@ Usage and the adapter contract are in README.md. This file is for whoever change
 ## Constraints to remember
 
 - **The macOS Tailscale app cannot serve paths** (`tailscale serve <path>` fails with a sandbox error), hence tailshare's own server on `127.0.0.1` behind `tailscale serve --https=<port> http://127.0.0.1:<port>`.
+- **tailscale serve can be busy.** When two clients change the serve config at once, one gets "Another client is changing the serve config; please try again." (tailscale/tailscale#18742). tailshare tries again, up to five times.
 - **The CLI is a contract.** Options, output, messages a script may match, and exit status stay as they are; the tests pin them. `--which` and `--adapters` show a built-in adapter's directory as `(built in)`, or `null` in JSON.
 - `--detach` re-runs the same binary with `--as <id>` and `TAILSHARE_LOG` set, in a session of its own, and waits for its first stdout line. The child records itself in the state directory. If it fails before serving, it leaves its log for the parent to show.
 - Windows builds but is untested. It cannot send TERM, so `--stop` kills the share and cleans up for it.
@@ -44,10 +45,10 @@ go test ./internal/...     # the Go tests alone
 
 - **Go tests** (`internal/*/…_test.go`) cover what each built-in adapter serves, the site file systems, and the plist reader (including damaged input).
 - **Command line tests** (`tests/*.test.sh`, bash and python3) run a build of tailshare from outside, as its users do. A test is a `test_*` function in a `*.test.sh` file, which ends with `run_tests` (see `tests/lib.sh`).
-- `tests/fake/tailscale` stands in for tailscale: it keeps its serve config in the sandbox and can play a daemon that is down, off (`Stopped`), logged out, or whose `serve` fails or is denied. Every test but `live.test.sh` uses it, so they never touch the real `tailscale serve` config and can run while other shares are up.
+- `tests/fake/tailscale` stands in for tailscale: it keeps its serve config in the sandbox and can play a daemon that is down, off (`Stopped`), logged out, or whose `serve` fails, is denied, or is busy, and ports held by another `tailscale serve` in the foreground. Every test but `live.test.sh` uses it, so they never touch the real `tailscale serve` config and can run while other shares are up.
 - Each test gets its own sandbox: `TMPDIR`, `XDG_CONFIG_HOME`, `TAILSHARE_STATE_DIR` and the fake's state all live in it. After each way of stopping, `assert_clean` checks that the serve config, the state directory and the temporary directory are empty.
 - The tests for a missing tailscale build tailshare with `-ldflags "-X …/internal/tailscale.MacApp=…"`, so the app in `/Applications` is not found.
-- `live.test.sh` serves for real, fetches the URL over HTTPS, and checks that the ports other services use are the same before and after. Run it after changing how tailscale is called.
+- `live.test.sh` serves for real, fetches the URL over HTTPS, holds an unused port with a foreground `tailscale serve` to check it is refused, and checks that the ports other services use are the same before and after. Run it after changing how tailscale is called.
 - Give a command that should be refused a short `--time`, so a regression ends in seconds instead of serving for an hour.
 
 ## Releasing

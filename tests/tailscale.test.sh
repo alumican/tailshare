@@ -133,4 +133,42 @@ test_default_port_skips_ports_in_use() {
 11443" "ports served"
 }
 
+test_ports_held_in_the_foreground_are_in_use() {
+	echo hi > "$FILES/a.txt"
+	# Another tailscale serve, run without --bg, holds 10443 and 11443
+	export FAKE_TAILSCALE_FOREGROUND="10443 11443"
+	run "$TAILSHARE" -t 3s -p 11443 "$FILES/a.txt"
+	assert_status 1
+	assert_contains "$err" "port 11443 is already used by tailscale serve"
+	run "$TAILSHARE" -d -j "$FILES/a.txt"
+	assert_status 0
+	assert_eq "$(json_get "$out" port)" 12443 "port"
+	run "$TAILSHARE" --stop 12443
+	assert_status 0
+	assert_clean
+}
+
+test_serve_tries_again_when_another_client_changes_the_config() {
+	echo hi > "$FILES/a.txt"
+	export FAKE_TAILSCALE_BUSY=2 FAKE_TAILSCALE_BUSY_OFF=2
+	run "$TAILSHARE" -d -q "$FILES/a.txt"
+	assert_status 0
+	assert_eq "$(grep -c -- '--bg' "$FAKE_TAILSCALE_DIR/calls")" 3 "calls to tailscale serve --bg"
+	run "$TAILSHARE" --stop 10443
+	assert_status 0
+	assert_eq "$(grep -c -- ' off$' "$FAKE_TAILSCALE_DIR/calls")" 3 "calls to tailscale serve off"
+	assert_clean
+}
+
+test_serve_gives_up_when_the_config_stays_busy() {
+	echo hi > "$FILES/a.txt"
+	export FAKE_TAILSCALE_BUSY=100
+	run "$TAILSHARE" -t 3s "$FILES/a.txt"
+	assert_status 1
+	assert_contains "$err" "tailscale serve failed: Another client is changing the serve config; please try again."
+	assert_eq "$(grep -c -- '--bg' "$FAKE_TAILSCALE_DIR/calls")" 5 "calls to tailscale serve --bg"
+	rm -f "$FAKE_TAILSCALE_DIR"/busy-*
+	assert_clean
+}
+
 run_tests

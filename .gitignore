@@ -5,3 +5,6 @@ CLAUDE.local.md
 # The binary that go build makes here
 /tailshare
 /dist/
+
+# Research notes, kept local
+/docs/

@@ -12,9 +12,19 @@ live() {
 	before="$(serve_ports)"
 }
 
-# The ports tailscale serve uses now, one per line
+# The ports tailscale serve uses now, one per line, in the background or in the foreground
 serve_ports() {
-	"$tailscale_bin" serve status --json | python3 -c 'import json, sys; print("\n".join(sorted((json.load(sys.stdin) or {}).get("TCP") or {})))'
+	"$tailscale_bin" serve status --json | python3 -c '
+import json, sys
+config = json.load(sys.stdin) or {}
+ports = set(config.get("TCP") or {})
+for foreground in (config.get("Foreground") or {}).values():
+    ports |= set(foreground.get("TCP") or {})
+print("\n".join(sorted(ports)))'
+}
+
+serving_on() {
+	grep -qx "$1" <<< "$(serve_ports)"
 }
 
 assert_others_untouched() {
@@ -50,6 +60,29 @@ test_time_up_over_the_tailnet() {
 	pid="$(json_get "$out" pid)"
 	STARTED="$STARTED $pid"
 	wait_until 10 gone "$pid" || fail "still running after its time"
+	assert_others_untouched
+	assert_clean
+}
+
+test_a_port_held_in_the_foreground_is_refused() {
+	live
+	# A port nothing uses, held by a tailscale serve in the foreground, as another tool would
+	local port=19443
+	while grep -qx "$port" <<< "$before"; do
+		port=$((port + 1000))
+	done
+	"$tailscale_bin" serve --https="$port" http://127.0.0.1:9 > /dev/null 2>&1 < /dev/null &
+	local holder=$!
+	STARTED="$STARTED $holder"
+	wait_until 10 serving_on "$port" || fail "the foreground serve did not start"
+	echo hi > "$FILES/a.txt"
+	run "$TAILSHARE" -t 3s -p "$port" "$FILES/a.txt"
+	assert_status 1
+	assert_contains "$err" "port $port is already used by tailscale serve"
+	# A foreground serve's config goes with it
+	kill -TERM "$holder"
+	wait "$holder" 2> /dev/null
+	wait_until 10 eval '! serving_on "$port"' || fail "the foreground serve left port $port behind"
 	assert_others_untouched
 	assert_clean
 }
