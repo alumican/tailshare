@@ -67,13 +67,42 @@ test_options_with_equals_and_after_double_dash() {
 	assert_eq "$(cut -f 1 <<< "$out")" "file" "adapter"
 }
 
-test_skill() {
+test_skill_for_each_agent() {
+	local agent
+	for agent in claude codex; do
+		run "$TAILSHARE" --skill "$agent"
+		assert_status 0
+		assert_eq "$out" "$(cat "$ROOT/skills/$agent/tailshare/SKILL.md")" "the skill for $agent, as in the repository"
+		assert_eq "$(sed -n 2p <<< "$out")" "name: tailshare" "name in the skill for $agent"
+	done
 	run "$TAILSHARE" --skill
-	assert_status 0
-	assert_eq "$(head -n 3 <<< "$out")" "---
-name: tailshare
-description: Show the user a file, a page, a built site, a PDF, an image or an iPhone app (IPA) on their phone or another device, through their Tailscale tailnet. Use when the user should open, look at, try or install something you made, instead of starting your own web server or tunnel." "front matter"
-	assert_eq "$out" "$(cat "$ROOT/skills/tailshare/SKILL.md")" "the skill, as in the repository"
+	assert_status 2
+	run "$TAILSHARE" --skill gemini
+	assert_status 2
+	assert_contains "$err" "--skill takes claude or codex (got 'gemini')"
+}
+
+# The skills differ only in their front matter: what follows it is one text
+test_skills_say_the_same() {
+	local claude codex
+	claude="$(sed '1,/^---$/d' "$ROOT/skills/claude/tailshare/SKILL.md")"
+	codex="$(sed '1,/^---$/d' "$ROOT/skills/codex/tailshare/SKILL.md")"
+	[[ -n "$claude" ]] || fail "no body in the skill for claude"
+	assert_eq "$claude" "$codex" "the skills' bodies"
+	grep -qx 'allowed-tools: Bash(tailshare \*)' "$ROOT/skills/claude/tailshare/SKILL.md" \
+		|| fail "the skill for claude does not allow tailshare without asking"
+}
+
+# Every option in --help is in the README; those an agent needs to share something are in the skill
+test_options_are_documented() {
+	local option
+	run "$TAILSHARE" --help
+	for option in $(grep -oE -- '--[a-z]+' <<< "$out" | sort -u); do
+		grep -qF -- "$option" "$ROOT/README.md" || fail "$option is in --help, not in README.md"
+	done
+	for option in -d -q -j -t -p --once --secret --allow --qr --list --stop --which; do
+		grep -qF -- "$option" "$ROOT/skills/codex/tailshare/SKILL.md" || fail "$option is not in the skill"
+	done
 }
 
 run_tests

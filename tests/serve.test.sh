@@ -385,6 +385,20 @@ test_a_killed_share_leaves_a_port_taken_since_alone() {
 	assert_empty_dir "$TAILSHARE_STATE_DIR"
 }
 
+test_what_tailshare_1_0_left_is_turned_off() {
+	# tailshare 1.0 served with --bg; one of its shares was killed, leaving its config and its record
+	mkdir -p "$FAKE_TAILSCALE_DIR/serve" "$TAILSHARE_STATE_DIR"
+	echo "http://127.0.0.1:61234" > "$FAKE_TAILSCALE_DIR/serve/10443"
+	echo "http://127.0.0.1:1" > "$FAKE_TAILSCALE_DIR/serve/11443"
+	printf 'port=10443\nurl=https://host.example.ts.net:10443/a.txt\nadapter=file\npath=/a.txt\npid=999999\nexpires=\ntarget=http://127.0.0.1:61234\n' \
+		> "$TAILSHARE_STATE_DIR/10443"
+	run "$TAILSHARE" --list
+	assert_status 0
+	[[ -e "$FAKE_TAILSCALE_DIR/serve/10443" ]] && fail "the config 1.0 left is still there"
+	assert_eq "$(cat "$FAKE_TAILSCALE_DIR/serve/11443")" "http://127.0.0.1:1" "another service's config"
+	assert_empty_dir "$TAILSHARE_STATE_DIR"
+}
+
 # MARK: - Every way of stopping leaves nothing behind
 
 test_time_up_when_detached() {

@@ -32,4 +32,4 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: go vet ./... && go test ./... && go build .
+      - run: go vet ./... && go test ./... && go build ./...

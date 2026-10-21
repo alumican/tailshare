@@ -22,7 +22,7 @@ tailshare --list                show running shares
 tailshare --stop <port|all>     stop running shares
 tailshare --adapters            list the adapters
 tailshare --which <path>        show which adapter would serve a path
-tailshare --skill               print the skill for AI agents (SKILL.md)
+tailshare --skill claude|codex  print the skill for an AI agent (SKILL.md)
 ```
 
 | Option | |
@@ -41,7 +41,7 @@ tailshare --skill               print the skill for AI agents (SKILL.md)
 | `--stop TARGET` | Stop the share on port TARGET, or all of them with `all`. |
 | `--adapters` | List the adapters in the order they are tried. |
 | `--which PATH` | Show which adapter would serve PATH; serve nothing. |
-| `--skill` | Print the skill that teaches AI agents to use tailshare (see [For AI agents](#for-ai-agents)). |
+| `--skill AGENT` | Print the skill that teaches an AI agent to use tailshare: `claude` (Claude Code) or `codex` (Codex). See [For AI agents](#for-ai-agents). |
 | `-h, --help` / `-V, --version` | Show the help / the version. |
 
 Short options without values can be combined: `-dqj`.
@@ -75,14 +75,14 @@ Short options without values can be combined: `-dqj`.
 
 ### For AI agents
 
-tailshare carries a skill (`SKILL.md`, the Agent Skills format) that tells an agent when and how to use it: share detached, hand over the URL as a link, stop what it started. Install it for Claude Code and for Codex:
+tailshare carries a skill (`SKILL.md`, the Agent Skills format) that tells an agent when and how to use it: share detached, hand over the URL as a link, stop what it started. There is one for Claude Code and one for Codex; they say the same, and the one for Claude Code also lets it run `tailshare` without asking each time (`allowed-tools`). Install them:
 
 ```sh
-mkdir -p ~/.claude/skills/tailshare && tailshare --skill > ~/.claude/skills/tailshare/SKILL.md
-mkdir -p ~/.codex/skills/tailshare && tailshare --skill > ~/.codex/skills/tailshare/SKILL.md
+mkdir -p ~/.claude/skills/tailshare && tailshare --skill claude > ~/.claude/skills/tailshare/SKILL.md
+mkdir -p ~/.codex/skills/tailshare && tailshare --skill codex > ~/.codex/skills/tailshare/SKILL.md
 ```
 
-From a clone, link `skills/tailshare` there instead, so it follows `git pull`. Run it again after updating tailshare otherwise.
+Run them again after updating tailshare. From a clone, link `skills/claude/tailshare` and `skills/codex/tailshare` there instead, so they follow `git pull`.
 
 ## Built-in adapters
 
@@ -200,15 +200,15 @@ curl -fsSL https://github.com/alumican/tailshare/releases/latest/download/tailsh
 With Go 1.24 or later:
 
 ```sh
-go install github.com/alumican/tailshare@latest     # into $(go env GOPATH)/bin
+go install github.com/alumican/tailshare/cmd/tailshare@latest     # into $(go env GOPATH)/bin
 ```
 
-Or from a clone, building the binary in place and linking it onto your `PATH` (run `go build` again after `git pull`):
+Or from a clone, building the binary into `bin/` and linking it onto your `PATH` (build again after `git pull`):
 
 ```sh
 git clone https://github.com/alumican/tailshare && cd tailshare
-go build
-ln -s "$PWD/tailshare" ~/.local/bin/tailshare
+go build -o bin/ ./cmd/tailshare
+ln -s "$PWD/bin/tailshare" ~/.local/bin/tailshare
 ```
 
 ## Development

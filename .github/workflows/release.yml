@@ -1,6 +1,6 @@
 name: Release
 
-# Push a tag such as v1.2.3 (matching the version in main.go) to publish a release:
+# Push a tag such as v1.2.3 (matching the version in cmd/tailshare/main.go) to publish a release:
 # the tests run, then an archive per platform and SHA256SUMS are attached to it.
 on:
   push:

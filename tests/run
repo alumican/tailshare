@@ -30,7 +30,7 @@ if (($# == 0)); then
 	echo "# go vet and go test"
 	{ go vet ./... && go test ./...; } || failed=$((failed + 1))
 	for platform in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64; do
-		GOOS="${platform%/*}" GOARCH="${platform#*/}" go build -o /dev/null . \
+		GOOS="${platform%/*}" GOARCH="${platform#*/}" go build -o /dev/null ./cmd/tailshare \
 			|| { echo "FAIL    go build for $platform"; failed=$((failed + 1)); }
 	done
 	echo "# builds for darwin, linux and windows"
@@ -38,7 +38,7 @@ fi
 
 build="$(mktemp -d "${TMPDIR:-/tmp}/tailshare-test-build.XXXXXX")"
 trap 'rm -rf "$build"' EXIT
-go build -o "$build/tailshare" . || exit 1
+go build -o "$build/tailshare" ./cmd/tailshare || exit 1
 export TAILSHARE="$build/tailshare"
 for file in "${files[@]}"; do
 	bash "$file" || failed=$((failed + 1))

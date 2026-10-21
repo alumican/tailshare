@@ -4,7 +4,6 @@ package main
 
 import (
 	"bytes"
-	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/alumican/tailshare/internal/adapter"
+	"github.com/alumican/tailshare/skills"
 )
 
 // Set by a release build: go build -ldflags "-X main.version=..."
@@ -24,18 +24,13 @@ var version = "1.1.0"
 
 var prog = filepath.Base(os.Args[0])
 
-// The agent skill for Claude Code and Codex, printed by --skill
-//
-//go:embed skills/tailshare/SKILL.md
-var skill string
-
 func usage() string {
 	return fmt.Sprintf(`Usage: %[1]s [options] <path>      serve a path
        %[1]s --list                show running shares
        %[1]s --stop <port|all>     stop running shares
        %[1]s --adapters            list the adapters
        %[1]s --which <path>        show which adapter would serve a path
-       %[1]s --skill               print the skill for AI agents (SKILL.md)
+       %[1]s --skill claude|codex  print the skill for an AI agent (SKILL.md)
 
 Try '%[1]s --help' for more.
 `, prog)
@@ -46,7 +41,7 @@ func help() string {
 
 USAGE
   %[1]s [options] <path>
-  %[1]s --list | --stop <port|all> | --adapters | --which <path> | --skill
+  %[1]s --list | --stop <port|all> | --adapters | --which <path> | --skill <agent>
 
 DESCRIPTION
   Serves <path> over HTTPS to the devices on your tailnet only, and prints its URL.
@@ -84,8 +79,9 @@ OPTIONS
       --stop TARGET  stop the share on port TARGET, or all of them with "all".
       --adapters     list the adapters in the order they are tried.
       --which PATH   show which adapter would serve PATH; serve nothing.
-      --skill        print the skill that teaches AI agents (Claude Code, Codex) to
-                     use tailshare: save it as <skills>/tailshare/SKILL.md.
+      --skill AGENT  print the skill that teaches an AI agent to use tailshare, for
+                     claude (Claude Code) or codex (Codex). Save it as
+                     ~/.claude/skills/tailshare/SKILL.md or ~/.codex/skills/tailshare/SKILL.md.
   -h, --help         show this help.  -V, --version  show the version.
 
 OUTPUT
@@ -235,6 +231,7 @@ type options struct {
 	qr       bool
 	mode     string // serve, list, stop, adapters, which, skill
 	stop     string
+	agent    string // for --skill
 	path     string
 }
 
@@ -299,7 +296,10 @@ func parse(args []string) options {
 		case arg == "--qr":
 			o.qr = true
 		case arg == "--skill":
-			o.mode = "skill"
+			o.mode, o.agent = "skill", value(i)
+			i++
+		case name == "--skill" && hasInline:
+			o.mode, o.agent = "skill", inline
 		case arg == "-d" || arg == "--detach":
 			o.detach = true
 		case arg == "-j" || arg == "--json":
@@ -362,6 +362,10 @@ func main() {
 
 	switch o.mode {
 	case "skill":
+		skill, ok := skills.For(o.agent)
+		if !ok {
+			usageError("--skill takes claude or codex (got '%s')", o.agent)
+		}
 		fmt.Print(skill)
 		exit(0)
 	case "adapters":

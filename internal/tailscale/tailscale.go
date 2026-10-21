@@ -235,12 +235,8 @@ func (l *lockedBuffer) String() string {
 	return l.b.String()
 }
 
-// Serve exposes target on port in the background (tailscale serve --bg), until ServeOff.
-// tailshare serves in the foreground; this is kept for what older versions left.
-func (c CLI) Serve(port int, target string) error {
-	return c.serve("--bg", "--https="+strconv.Itoa(port), target)
-}
-
+// ServeOff turns off what tailscale serve does in the background on port. tailshare serves in the
+// foreground; this is for a config that tailshare 1.0, which used --bg, left behind.
 func (c CLI) ServeOff(port int) error {
 	return c.serve("--https="+strconv.Itoa(port), "off")
 }

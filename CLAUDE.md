@@ -15,16 +15,12 @@ Usage and the adapter contract are in README.md. This file is for whoever change
 
 | | |
 |---|---|
-| `main.go` | Arguments, help, `--adapters` and `--which`, exiting with cleanups (`atExit`, `exit`, `die`) |
-| `serve.go` | Serving (the request handler: `--secret`, `--allow`, `--once`, the log), `--detach`, `--list`, `--stop` |
-| `skills/tailshare/SKILL.md` | The skill for AI agents (Claude Code, Codex), embedded and printed by `--skill` |
-| `proc_unix.go`, `proc_windows.go` | Whether a process is alive, asking it to stop, detaching |
-| `internal/adapter` | Finding adapters; the built-in ones (`ipa.go`, `html.go`, `file` and `dir` in `adapter.go`); running a `prepare` of your own. Templates for the install page in `templates/`, embedded |
-| `internal/site` | What a share serves, as an `fs.FS`: single files mapped to paths, or a directory without its hidden top entries |
-| `internal/plist` | Reading an Info.plist, XML or binary |
-| `internal/tailscale` | The tailscale CLI: finding it, status, `serve status`, a `tailscale serve` run in the foreground as a child |
-| `internal/qr` | QR codes for `--qr`, drawn in the terminal |
-| `internal/state` | Records of running shares, `key=value` files in the state directory |
+| `cmd/tailshare` | The command: arguments and help, serving and the request handler, `--detach`, `--list`, `--stop` |
+| `internal/adapter` | Finding adapters, the built-in ones, running a `prepare` of your own |
+| `internal/site`, `internal/plist`, `internal/qr` | What a share serves (`fs.FS`), Info.plist, QR codes |
+| `internal/tailscale`, `internal/state` | The tailscale CLI, records of running shares |
+| `skills/claude`, `skills/codex` | The skill for each agent, embedded by `skills/skills.go` for `--skill` |
+| `tests`, `scripts` | Command line tests, the release build |
 
 ## Constraints to remember
 
@@ -58,11 +54,11 @@ go test ./internal/...     # the Go tests alone
 
 ## Releasing
 
-1. Set `version` in `main.go` (`1.2.3`) and commit it.
+1. Set `version` in `cmd/tailshare/main.go` (`1.2.3`) and commit it.
 2. `git tag v1.2.3 && git push origin main v1.2.3`.
 3. `.github/workflows/release.yml` runs the tests on macOS and Linux, then `scripts/release`, and publishes a GitHub release with an archive per platform and `SHA256SUMS`. GitHub adds the source.
 
-- `scripts/release v1.2.3` builds the same archives into `dist/` locally; it refuses a tag that does not match `main.go`.
+- `scripts/release v1.2.3` builds the same archives into `dist/` locally; it refuses a tag that does not match `cmd/tailshare/main.go`.
 - Releases and CI build with the latest stable Go, for its security fixes. `go.mod` says 1.24, the oldest that works: earlier linkers leave out `LC_UUID`, and macOS 26 refuses to run such binaries (`dyld: missing LC_UUID load command`). The `oldest-go` job checks that 1.24 still builds.
 - Stay on v1: from v2 on, Go needs the module path to end in `/v2`, which changes `go install` for everyone.
 - `.github/workflows/test.yml` runs `tests/run` (without `--live`) on macOS and Linux for every push to `main`.
@@ -70,7 +66,7 @@ go test ./internal/...     # the Go tests alone
 ## Users
 
 - iOS projects build an IPA in their own OTA script and `exec tailshare` on it. Keep the CLI and the exit status stable for them.
-- AI agents, through the skill. When the CLI changes, update `skills/tailshare/SKILL.md` with it; `args.test.sh` checks that `--skill` prints it.
+- AI agents, through the skills. When the CLI changes, update `skills/claude/tailshare/SKILL.md` and `skills/codex/tailshare/SKILL.md` with it. They differ only in their front matter (the one for Claude Code has `allowed-tools`); `args.test.sh` checks that their bodies match, that `--skill` prints them, and that the options in `--help` are in the README and the skill.
 
 ## Git
 

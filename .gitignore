@@ -2,8 +2,8 @@
 HANDOVER.md
 CLAUDE.local.md
 
-# The binary that go build makes here
-/tailshare
+# Binaries built here: go build -o bin/ ./cmd/tailshare
+/bin/
 /dist/
 
 # Research notes, kept local

@@ -13,7 +13,7 @@ build_tailshare() {
 	local dir="$1"
 	shift
 	mkdir -p "$dir"
-	(cd "$ROOT" && go build "$@" -o "$dir/tailshare" .) || return 1
+	(cd "$ROOT" && go build "$@" -o "$dir/tailshare" ./cmd/tailshare) || return 1
 	echo "$dir/tailshare"
 }
 

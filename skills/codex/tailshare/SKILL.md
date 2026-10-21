@@ -12,10 +12,10 @@ description: Show the user a file, a page, a built site, a PDF, an image or an i
 Run it detached, so your session is not blocked; the URL is the only line on stdout:
 
 ```sh
-url=$(tailshare -d -q report.html)       # a page and the local files it refers to
-url=$(tailshare -d -q ./dist)            # a built site, served at /
-url=$(tailshare -d -q -t 10m App.ipa)    # an iPhone install page (open it in Safari)
-tailshare -d -j notes.pdf                # the same, as JSON: url, port, adapter, path, pid, expires
+tailshare -d -q report.html           # a page and the local files it refers to
+tailshare -d -q ./dist                # a built site, served at /
+tailshare -d -q -t 10m App.ipa        # an iPhone install page (open it in Safari)
+tailshare -d -j notes.pdf             # the same, as JSON: url, port, adapter, path, pid, expires
 ```
 
 What is served depends on the path: `*.ipa` gets an install page, `*.html` the page with only the files it refers to (images, styles), a directory is served at `/` without its hidden entries, anything else is that one file. `tailshare --which <path>` tells you which, without serving.
