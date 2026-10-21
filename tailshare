@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 PROG="$(basename "$0")"
 
 # This script, through any symlinks (e.g. ~/.local/bin/tailshare)
@@ -433,8 +433,20 @@ fi
 [[ -n "$tailscale_bin" ]] || die "tailscale not found; install it, or put it on PATH"
 command -v python3 > /dev/null || die "python3 not found"
 
-host="$("$tailscale_bin" status --json 2> /dev/null | python3 -c 'import json, sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2> /dev/null)" \
-	|| die "tailscale is not running or not logged in"
+# "<state><TAB><this device's tailnet name>"; the state is empty when tailscale does not answer
+status="$("$tailscale_bin" status --json 2> /dev/null | python3 -c '
+import json, sys
+try:
+    status = json.load(sys.stdin) or {}
+except ValueError:
+    status = {}
+print(status.get("BackendState") or "", ((status.get("Self") or {}).get("DNSName") or "").rstrip("."), sep="\t")
+' || true)"
+state="${status%%$'\t'*}"
+host="${status#*$'\t'}"
+[[ -n "$state" ]] || die "tailscale is not running"
+# Connected only when Running; when it is off (Stopped) or logged out (NeedsLogin), a URL would not open
+[[ "$state" == Running ]] || die "tailscale is not connected (state: $state); connect it and try again"
 [[ -n "$host" ]] || die "could not find this device's tailnet name"
 
 # Whether tailscale serve already uses the port, for anything
