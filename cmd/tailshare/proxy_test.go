@@ -8,9 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -89,8 +87,7 @@ func proxyShare(t *testing.T, app *httptest.Server, token string) (*httptest.Ser
 	}
 	share := httptest.NewServer(&shareHandler{content: newProxy(target), token: token, cookie: "tailshare_10443", quiet: true})
 	t.Cleanup(share.Close)
-	jar, _ := cookiejar.New(nil)
-	return share, &http.Client{Jar: jar}
+	return share, &http.Client{}
 }
 
 func TestProxyPassesRequestsOn(t *testing.T) {
@@ -174,43 +171,45 @@ func TestProxyUpgradesConnections(t *testing.T) {
 	}
 }
 
-// With --secret, opening the URL sets a cookie, so the app's own absolute links work
+// With --secret, opening the URL sets a cookie, so the app's own absolute links work. The cookie is
+// Secure: a browser gets it over the HTTPS of tailscale serve; this test reaches the share over plain
+// HTTP, so it sends the cookie back by hand rather than through a cookie jar.
 func TestProxyWithSecret(t *testing.T) {
 	app := backend(t)
 	share, client := proxyShare(t, app, "tok")
-	get := func(c *http.Client, path string) int {
-		response, err := c.Get(share.URL + path)
+	get := func(path, cookie string) *http.Response {
+		request, _ := http.NewRequest(http.MethodGet, share.URL+path, nil)
+		if cookie != "" {
+			request.Header.Set("Cookie", cookie)
+		}
+		response, err := client.Do(request)
 		if err != nil {
 			t.Fatal(err)
 		}
 		response.Body.Close()
-		return response.StatusCode
+		return response
 	}
-	stranger := &http.Client{}
-	if code := get(client, "/echo"); code != http.StatusNotFound {
+	if code := get("/echo", "").StatusCode; code != http.StatusNotFound {
 		t.Errorf("before opening the URL: %d", code)
 	}
-	if code := get(client, "/tok/echo"); code != http.StatusOK {
-		t.Errorf("the URL: %d", code)
+	opened := get("/tok/echo", "")
+	cookies := opened.Cookies()
+	if opened.StatusCode != http.StatusOK || len(cookies) != 1 {
+		t.Fatalf("the URL: %d, cookies %v", opened.StatusCode, cookies)
 	}
-	if code := get(client, "/echo"); code != http.StatusOK {
-		t.Errorf("an absolute link, with the cookie: %d", code)
+	cookie := cookies[0]
+	if cookie.Name != "tailshare_10443" || cookie.Value != "tok" || cookie.Path != "/" || !cookie.HttpOnly || !cookie.Secure ||
+		cookie.SameSite != http.SameSiteLaxMode {
+		t.Errorf("cookie: %+v", cookie)
 	}
-	if code := get(stranger, "/echo"); code != http.StatusNotFound {
-		t.Errorf("without the cookie: %d", code)
-	}
-	shareURL, _ := url.Parse(share.URL)
-	for _, cookie := range client.Jar.Cookies(shareURL) {
-		if cookie.Name == "tailshare_10443" && cookie.Value != "tok" {
-			t.Errorf("cookie: %v", cookie)
+	for value, want := range map[string]int{
+		"tailshare_10443=tok": http.StatusOK,       // an absolute link, with the cookie
+		"tailshare_10443=tak": http.StatusNotFound, // a wrong token
+		"tailshare_11443=tok": http.StatusNotFound, // the cookie of another share
+	} {
+		if code := get("/echo", value).StatusCode; code != want {
+			t.Errorf("Cookie: %s: %d, want %d", value, code, want)
 		}
-	}
-	wrong := httptest.NewRequest(http.MethodGet, "/echo", nil)
-	wrong.AddCookie(&http.Cookie{Name: "tailshare_10443", Value: "tak"})
-	w := httptest.NewRecorder()
-	share.Config.Handler.ServeHTTP(w, wrong)
-	if w.Code != http.StatusNotFound {
-		t.Errorf("a wrong cookie: %d", w.Code)
 	}
 }
 

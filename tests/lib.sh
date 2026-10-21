@@ -140,9 +140,9 @@ fetch() {
 
 # Start tests/fake/app, an app on this machine to share by URL; its port is in $APP_PORT
 start_app() {
-	"$TESTS/fake/app" "$SANDBOX/app.port" > /dev/null 2>&1 &
+	python3 "$TESTS/fake/app" "$SANDBOX/app.port" > "$SANDBOX/app.log" 2>&1 &
 	STARTED="$STARTED $!"
-	wait_until 10 test -s "$SANDBOX/app.port" || fail "the app did not start"
+	wait_until 30 test -s "$SANDBOX/app.port" || fail "the app did not start: $(cat "$SANDBOX/app.log")"
 	APP_PORT="$(cat "$SANDBOX/app.port")"
 }
 
