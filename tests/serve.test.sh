@@ -12,6 +12,11 @@ share() {
 	STARTED="$STARTED $(json_get "$share" pid)"
 }
 
+# Seconds until a share's "expires", from now
+seconds_left() {
+	python3 -c 'import sys, time; from datetime import datetime; print(round(datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%S%z").timestamp() - time.time()))' "$(json_get "$1" expires)"
+}
+
 # Stop the share on $port, and check it is all gone: the process, the local server and every file
 stop_and_check() {
 	local server pid
@@ -279,6 +284,34 @@ test_chosen_port() {
 	stop_and_check
 }
 
+# Each option by its long name, then with "=", serves as its short name does
+test_long_options() {
+	echo hi > "$FILES/a.txt"
+	run "$TAILSHARE" --detach --json --quiet --port 20443 --time 90 --as dir "$FILES"
+	assert_status 0
+	assert_eq "$err" "" "stderr with --quiet"
+	share="$out" port=20443
+	STARTED="$STARTED $(json_get "$share" pid)"
+	assert_eq "$(json_get "$share" port)" 20443 "port"
+	assert_eq "$(json_get "$share" adapter)" dir "adapter"
+	local left
+	left="$(seconds_left "$share")"
+	((left >= 85 && left <= 90)) || fail "seconds left with --time 90: $left"
+	stop_and_check
+
+	share --port=20443 --time=2h --as=file --allow='alice@example.com, *@team.example' "$FILES/a.txt"
+	assert_eq "$port" 20443 "port"
+	assert_eq "$(json_get "$share" adapter)" file "adapter"
+	left="$(seconds_left "$share")"
+	((left >= 7195 && left <= 7200)) || fail "seconds left with --time=2h: $left"
+	assert_fetch /a.txt 403 "Tailscale-User-Login: bob@example.com"
+	assert_fetch /a.txt 200 "Tailscale-User-Login: alice@example.com"
+	assert_fetch /a.txt 200 "Tailscale-User-Login: carol@team.example"
+	run "$TAILSHARE" --stop=20443
+	assert_status 0
+	assert_clean
+}
+
 test_detach_quiet_prints_only_the_url() {
 	echo hi > "$FILES/a.txt"
 	run "$TAILSHARE" -dq "$FILES/a.txt"
@@ -539,12 +572,13 @@ test_ctrl_c() {
 test_term() {
 	echo hi > "$FILES/a.txt"
 	start_foreground -q -t 0 "$FILES/a.txt"
+	assert_eq "$(http_get "$(local_url 10443)/a.txt")" 200 "GET /a.txt"
 	kill -TERM "$FG_PID"
 	wait "$FG_PID"
 	status=$?
 	out="$(cat "$SANDBOX/fg.out")" err="$(cat "$SANDBOX/fg.err")"
 	assert_status 0
-	assert_eq "$err" "" "stderr with --quiet"
+	assert_eq "$err" "" "stderr with --quiet, after a request"
 	assert_clean
 }
 

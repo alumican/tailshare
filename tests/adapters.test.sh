@@ -45,6 +45,8 @@ test_as_overrides_the_match() {
 	touch "$FILES/report.html"
 	run "$TAILSHARE" --as file --which "$FILES/report.html"
 	assert_eq "$(cut -f 1 <<< "$out")" file "short name"
+	run "$TAILSHARE" -a file --which "$FILES/report.html"
+	assert_eq "$(cut -f 1 <<< "$out")" file "with -a"
 	run "$TAILSHARE" --as 99-file --which "$FILES/report.html"
 	assert_eq "$(cut -f 1 <<< "$out")" file "whole name"
 	run "$TAILSHARE" --as nothing --which "$FILES/report.html"

@@ -15,12 +15,20 @@ test_help_goes_to_stdout() {
 	assert_contains "$out" "USAGE"
 	assert_contains "$out" "EXIT STATUS"
 	assert_eq "$err" "" "stderr"
+	local help="$out"
+	run "$TAILSHARE" -h
+	assert_status 0
+	assert_eq "$out" "$help" "-h"
 }
 
 test_version() {
 	run "$TAILSHARE" -V
 	assert_status 0
 	[[ "$out" =~ ^tailshare\ [0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "version: $out"
+	local version="$out"
+	run "$TAILSHARE" --version
+	assert_status 0
+	assert_eq "$out" "$version" "--version"
 }
 
 test_wrong_arguments_exit_2() {
@@ -74,6 +82,9 @@ test_skill_for_each_agent() {
 		assert_status 0
 		assert_eq "$out" "$(cat "$ROOT/skills/$agent/tailshare/SKILL.md")" "the skill for $agent, as in the repository"
 		assert_eq "$(sed -n 2p <<< "$out")" "name: tailshare" "name in the skill for $agent"
+		run "$TAILSHARE" --skill="$agent"
+		assert_status 0
+		assert_eq "$out" "$(cat "$ROOT/skills/$agent/tailshare/SKILL.md")" "--skill=$agent"
 	done
 	run "$TAILSHARE" --skill
 	assert_status 2
